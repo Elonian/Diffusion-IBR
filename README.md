@@ -1,6 +1,6 @@
 # Diffusion-IBR
 
-Diffusion-IBR is a research workspace for iterative image-based refinement on top of radiance field / Gaussian Splatting training loops.
+Diffusion-IBR for iterative image-based refinement on top of radiance field / Gaussian Splatting training loops.
 
 At the repository level, the main production path is:
 
