@@ -1,0 +1,19 @@
+{
+  "stage": "full",
+  "freefix_root": "/mntdatalora/src/Diffusion-IBR/works/FreeFix",
+  "cache_root": "/mntdatalora/src/Diffusion-IBR/cache_weights",
+  "backend": "flux",
+  "data_type": "colmap",
+  "data_factor": 4,
+  "test_every": 8,
+  "max_steps": 30000,
+  "eval_steps": "7000,30000",
+  "save_steps": "7000,30000",
+  "sync_exp_base_dir_with_result_dir": true,
+  "data_dir": "/mntdatalora/src/Diffusion-IBR/data/FreeFix/mipnerf/bicycle_v2",
+  "result_dir": "/mntdatalora/src/Diffusion-IBR/outputs/official_freefix/flux_bicycle_v2",
+  "exp_cfg": "/mntdatalora/src/Diffusion-IBR/works/FreeFix/exp_cfg/mipnerf/flux_bicycle_v2.yaml",
+  "base_cfg": "/mntdatalora/src/Diffusion-IBR/works/FreeFix/exp_cfg/base.yaml",
+  "eval_test": true,
+  "test_from_train": false
+}

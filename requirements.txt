@@ -1,0 +1,28 @@
+# Core numerical + vision stack
+numpy>=1.24
+scipy>=1.10
+pillow>=10.0
+imageio>=2.31
+opencv-python-headless>=4.8
+
+# PyTorch stack (install CUDA build as needed for your machine)
+torch>=2.1
+torchvision>=0.16
+
+# 3D reconstruction / rendering
+pycolmap>=3.10
+gsplat>=1.4.0
+
+# Diffusion / HF ecosystem (used by SDXL + FLUX fixer code)
+diffusers>=0.30.0
+transformers>=4.43.0
+accelerate>=0.30.0
+safetensors>=0.4.2
+huggingface-hub>=0.24.0
+einops>=0.7.0
+
+# Optional (Instruct-NeRF2NeRF full stack).
+# These are intentionally commented out because they may require gcc/g++ and
+# additional system-level dependencies in some environments.
+# nerfstudio>=0.3.0
+# clip @ git+https://github.com/openai/CLIP.git

@@ -1,0 +1,6 @@
+# Ignore data and outputs
+data/
+cache_weights/
+logs/
+outputs/
+works/

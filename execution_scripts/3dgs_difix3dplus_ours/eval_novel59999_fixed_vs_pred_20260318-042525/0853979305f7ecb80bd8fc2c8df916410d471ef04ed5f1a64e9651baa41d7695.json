@@ -1,0 +1,18 @@
+{
+  "timestamp_utc": "2026-03-18T05:06:35.426020+00:00",
+  "pred_dir": "/mntdatalora/src/Diffusion-IBR/outputs/ours_difix3dplus_gs/0853979305f7ecb80bd8fc2c8df916410d471ef04ed5f1a64e9651baa41d7695/renders/novel/59999/Fixed",
+  "gt_dir": "/mntdatalora/src/Diffusion-IBR/outputs/ours_difix3dplus_gs/0853979305f7ecb80bd8fc2c8df916410d471ef04ed5f1a64e9651baa41d7695/renders/novel/59999/Pred",
+  "matching_mode": "relative_path",
+  "num_pred_images_found": 313,
+  "num_pairs_found": 313,
+  "num_pred_missing_gt_relative_match": 0,
+  "device": "cuda",
+  "lpips_net": "alex",
+  "num_pairs_evaluated": 313,
+  "num_pairs_skipped_size_mismatch": 0,
+  "metrics": {
+    "psnr": 32.02310688274737,
+    "ssim": 0.949234483721919,
+    "lpips": 0.05151442909678712
+  }
+}
