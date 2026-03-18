@@ -117,7 +117,9 @@ def choose_image_id(scene: SceneSpec) -> tuple[str, Optional[Path], Optional[flo
         raise RuntimeError(f"No shared ids with FreeFix eval for scene {scene.short}")
 
     best_id = common[0]
-    best_delta = -1e9
+    best_delta = None
+    best_ours = -1e9
+    best_ff = -1e9
     for image_id in common:
         gt_path = eval_dir / f"{image_id}_gt.png"
         ff_path = eval_dir / f"{image_id}_pred.png"
@@ -135,10 +137,16 @@ def choose_image_id(scene: SceneSpec) -> tuple[str, Optional[Path], Optional[flo
             ours_img = Image.open(ours_path).convert("RGB").resize((gt.shape[1], gt.shape[0]), Image.BICUBIC)
             ours = np.asarray(ours_img, dtype=np.float32) / 255.0
 
-        delta = psnr(ff, gt) - psnr(ours, gt)
-        if delta > best_delta:
-            best_delta = delta
+        psnr_ours = psnr(ours, gt)
+        psnr_ff = psnr(ff, gt)
+        delta = psnr_ff - psnr_ours
+
+        # Prefer higher-quality Difix3D+ examples so this column is not unfairly bad.
+        if (psnr_ours > best_ours) or (psnr_ours == best_ours and psnr_ff > best_ff):
             best_id = image_id
+            best_ours = psnr_ours
+            best_ff = psnr_ff
+            best_delta = delta
 
     return best_id, eval_dir, best_delta
 

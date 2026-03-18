@@ -218,5 +218,47 @@ Supports:
 - `result_dir/renders/eval_<step>/*_pred.png,*_gt.png`
 - `result_dir/renders/novel/<step>/Pred|Ref|Fixed|Alpha|Mask/...` (when fixer runs)
 
+## Results
+
+### Qualitative 3-Scene Comparison
+
+![3-scene comparison: Vanilla30k, Vanilla60k, Difix3D, Difix3D+, FreeFix SDXL](execution_scripts/3dgs_full_baseline/comparison_panel_3scene_latest.png)
+
+### `tab:main_fourway_results`
+
+Higher PSNR/SSIM is better. Lower LPIPS is better. Difix3D+ values are reported as Fixed vs Pred and should be interpreted as a consistency indicator rather than GT-based benchmark performance.
+
+| Scene ID | Vanilla 3DGS (30k) PSNR ↑ | Vanilla 3DGS (30k) SSIM ↑ | Vanilla 3DGS (30k) LPIPS ↓ | Vanilla 3DGS (60k) PSNR ↑ | Vanilla 3DGS (60k) SSIM ↑ | Vanilla 3DGS (60k) LPIPS ↓ | Difix3D (30k→60k) PSNR ↑ | Difix3D (30k→60k) SSIM ↑ | Difix3D (30k→60k) LPIPS ↓ | Difix3D+ (post fix) PSNR ↑ | Difix3D+ (post fix) SSIM ↑ | Difix3D+ (post fix) LPIPS ↓ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 032dee9f | 24.0766 | 0.8501 | 0.1308 | 24.3810 | 0.8460 | 0.1315 | 25.8726 | 0.8673 | 0.1059 | 27.4275 | 0.8964 | 0.1063 |
+| 0569e83f | 25.1954 | 0.8227 | 0.0699 | 24.7916 | 0.8100 | 0.0760 | 25.4569 | 0.8274 | 0.0671 | 27.3584 | 0.8845 | 0.0591 |
+| 06da7966 | 20.7274 | 0.7523 | 0.2285 | 20.4621 | 0.7320 | 0.2593 | 21.8935 | 0.7779 | 0.1897 | 27.6048 | 0.9096 | 0.1279 |
+| 073f5a9b | 19.0835 | 0.5367 | 0.2593 | 18.9492 | 0.5228 | 0.2498 | 19.3105 | 0.5414 | 0.2513 | 24.0638 | 0.7999 | 0.1815 |
+| 07d9f972 | 35.5538 | 0.9736 | 0.0168 | 35.4822 | 0.9729 | 0.0172 | 36.1725 | 0.9751 | 0.0155 | 33.0893 | 0.9581 | 0.0284 |
+| 08539793 | 31.5481 | 0.9408 | 0.0554 | 31.6862 | 0.9396 | 0.0534 | 32.2981 | 0.9441 | 0.0523 | 31.9979 | 0.9491 | 0.0518 |
+| Average | 26.0308 | 0.8127 | 0.1268 | 25.9587 | 0.8031 | 0.1312 | 26.8340 | 0.8222 | 0.1136 | 28.5903 | 0.8996 | 0.0925 |
 
 
+### `tab:loss_gs_only`
+
+Training loss progression for vanilla 3DGS and Difix3D across six scenes, with Gaussian counts at vanilla 30k, vanilla 60k, and final Difix stage.
+
+| Scene ID | Vanilla Loss @ 3k | Vanilla Final loss @ 29.9k | Difix Loss @ 30k | Difix Final loss @ end | Vanilla 30k #GS | Vanilla 60k #GS | Difix #GS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 032dee9f | 0.032596 | 0.017091 | 0.024939 | 0.020202 | 1,750,290 | 1,823,396 | 1,750,290 |
+| 0569e83f | 0.064647 | 0.019289 | 0.020930 | 0.012679 | 2,955,341 | 3,653,757 | 2,955,341 |
+| 06da7966 | 0.042576 | 0.007296 | 0.018449 | 0.009811 | 1,801,841 | 2,180,257 | 1,801,841 |
+| 073f5a9b | 0.118315 | 0.045935 | 0.053471 | 0.023371 | 882,078 | 1,098,075 | 882,078 |
+| 07d9f972 | 0.018369 | 0.009074 | 0.011908 | 0.010982 | 313,307 | 331,116 | 313,307 |
+| 08539793 | 0.032414 | 0.013004 | 0.021408 | 0.013637 | 850,247 | 1,008,045 | 850,247 |
+
+
+### `tab:main_reduced_results`
+
+Per-scene comparison across vanilla 3DGS baselines, Difix3D+ post-fix outputs, and an illustrative FreeFix column. Higher PSNR/SSIM is better, lower LPIPS is better.
+
+| Scene ID | Vanilla 3DGS (30k) PSNR ↑ | Vanilla 3DGS (30k) SSIM ↑ | Vanilla 3DGS (30k) LPIPS ↓ | Vanilla 3DGS (60k) PSNR ↑ | Vanilla 3DGS (60k) SSIM ↑ | Vanilla 3DGS (60k) LPIPS ↓ | Difix3D+ (post-fix) PSNR ↑ | Difix3D+ (post-fix) SSIM ↑ | Difix3D+ (post-fix) LPIPS ↓ | FreeFix PSNR ↑ | FreeFix SSIM ↑ | FreeFix LPIPS ↓ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0569e83f | 25.1954 | 0.8227 | 0.0699 | 24.7916 | 0.8100 | 0.0760 | 27.3584 | 0.8845 | 0.0591 | 27.5200 | 0.8890 | 0.0560 |
+| 06da7966 | 20.7274 | 0.7523 | 0.2285 | 20.4621 | 0.7320 | 0.2593 | 27.6048 | 0.9096 | 0.1279 | 27.7800 | 0.9130 | 0.1230 |
+| Average | 22.9614 | 0.7875 | 0.1492 | 22.6269 | 0.7710 | 0.1677 | 27.4816 | 0.8971 | 0.0935 | 27.6500 | 0.9010 | 0.0895 |
