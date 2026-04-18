@@ -4,3 +4,6 @@ cache_weights/
 logs/
 outputs/
 works/
+datasets/
+
+**.pyc

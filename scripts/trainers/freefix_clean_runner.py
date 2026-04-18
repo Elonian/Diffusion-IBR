@@ -2,12 +2,13 @@
 Clean FreeFix orchestrator for DL3DV scenes.
 
 This script keeps the execution logic in this repository while calling the
-official FreeFix code paths under `works/FreeFix` for recon/refine/eval.
+local FreeFix implementation under `scripts/freefix_impl` for recon/refine/eval.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from dataclasses import dataclass, fields
@@ -23,11 +24,20 @@ if str(TRAINER_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINER_DIR))
 
 import freefix_official_runner as official_runner
-from utils.freefix_support import (
-    DEFAULT_NEGATIVE_PROMPT,
-    DEFAULT_PROMPT,
-    generate_freefix_scene_assets,
+
+_FREEFIX_SUPPORT_SPEC = importlib.util.spec_from_file_location(
+    "diffusion_ibr_freefix_support",
+    PROJECT_ROOT / "utils" / "freefix_support.py",
 )
+if _FREEFIX_SUPPORT_SPEC is None or _FREEFIX_SUPPORT_SPEC.loader is None:
+    raise ImportError("Failed to load utils/freefix_support.py")
+_freefix_support = importlib.util.module_from_spec(_FREEFIX_SUPPORT_SPEC)
+sys.modules[_FREEFIX_SUPPORT_SPEC.name] = _freefix_support
+_FREEFIX_SUPPORT_SPEC.loader.exec_module(_freefix_support)
+
+DEFAULT_NEGATIVE_PROMPT = _freefix_support.DEFAULT_NEGATIVE_PROMPT
+DEFAULT_PROMPT = _freefix_support.DEFAULT_PROMPT
+generate_freefix_scene_assets = _freefix_support.generate_freefix_scene_assets
 
 
 @dataclass
@@ -138,7 +148,7 @@ def parse_args() -> Config:
 def resolve_paths(cfg: Config) -> tuple[Path, Path, Path, Path, Path, Path]:
     repo_root = Path(cfg.repo_root).resolve()
     dl3dv_root = Path(cfg.dl3dv_root).resolve() if cfg.dl3dv_root else (repo_root / "data" / "DL3DV-10K-Benchmark")
-    freefix_root = Path(cfg.freefix_root).resolve() if cfg.freefix_root else (repo_root / "works" / "FreeFix")
+    freefix_root = Path(cfg.freefix_root).resolve() if cfg.freefix_root else (repo_root / "scripts" / "freefix_impl")
     cache_root = Path(cfg.cache_root).resolve() if cfg.cache_root else (repo_root / "cache_weights")
     output_root = Path(cfg.output_root).resolve() if cfg.output_root else (repo_root / "outputs" / "official_freefix_clean")
     scene_data_dir = dl3dv_root / str(cfg.scene_id) / cfg.scene_data_subdir

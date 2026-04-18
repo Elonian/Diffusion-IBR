@@ -2,16 +2,24 @@ from .data_colmap import ColmapParser, Parser
 from .data_dataset import ColmapImageDataset, Dataset
 from .data_normalize import (
     align_principle_axes,
+    normalize,
     normalize_cameras_and_points,
     similarity_from_cameras,
     transform_cameras,
     transform_points,
 )
 from .pose_utils import (
+    CameraPoseInterpolator,
     interpolate_pose,
     quaternion_to_rotation_matrix,
     rotation_matrix_to_quaternion,
     slerp_quaternion,
+)
+from .traj_utils import (
+    generate_ellipse_path_y,
+    generate_ellipse_path_z,
+    generate_interpolated_path,
+    generate_spiral_path,
 )
 from .diffusion_utils import (
     blend_images,
@@ -49,6 +57,7 @@ __all__ = [
     "align_principle_axes",
     "transform_cameras",
     "transform_points",
+    "normalize",
     "normalize_cameras_and_points",
     "set_random_seed",
     "rgb_to_sh",
@@ -62,7 +71,12 @@ __all__ = [
     "rotation_matrix_to_quaternion",
     "quaternion_to_rotation_matrix",
     "slerp_quaternion",
+    "CameraPoseInterpolator",
     "interpolate_pose",
+    "generate_interpolated_path",
+    "generate_ellipse_path_y",
+    "generate_ellipse_path_z",
+    "generate_spiral_path",
     "resolve_hf_cache_root",
     "resolve_freefix_root",
     "ensure_import_path",

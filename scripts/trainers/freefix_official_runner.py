@@ -1,7 +1,7 @@
 """
-Run the official FreeFix pipeline from this repository's script entrypoint.
+Run the local FreeFix port from this repository's script entrypoint.
 
-This wrapper executes the official code under `works/FreeFix`:
+This wrapper executes the local FreeFix implementation under `scripts/freefix_impl`:
 1) `recon.trainer` for vanilla 3DGS reconstruction
 2) `ours.refine_by_flux` / `ours.refine_by_sdxl` for diffusion refinement
 3) `ours.evaluation` for metric evaluation
@@ -21,7 +21,7 @@ from typing import List, Optional
 @dataclass
 class Config:
     stage: str = "full"  # recon | refine | eval | full
-    freefix_root: str = "/mntdatalora/src/Diffusion-IBR/works/FreeFix"
+    freefix_root: str = "/mntdatalora/src/Diffusion-IBR/scripts/freefix_impl"
     cache_root: str = "/mntdatalora/src/Diffusion-IBR/cache_weights"
     cuda_device: Optional[str] = None
     dry_run: bool = False
@@ -63,6 +63,19 @@ def _ensure_freefix_on_path(freefix_root: str) -> None:
     resolved = str(Path(freefix_root).resolve())
     if resolved not in sys.path:
         sys.path.insert(0, resolved)
+    root_path = Path(resolved)
+    for name, module in list(sys.modules.items()):
+        if name not in {"ours", "recon"} and not name.startswith(("ours.", "recon.")):
+            continue
+        module_file = getattr(module, "__file__", None)
+        if module_file is None:
+            continue
+        try:
+            module_path = Path(module_file).resolve()
+        except OSError:
+            continue
+        if module_path != root_path and root_path not in module_path.parents:
+            del sys.modules[name]
 
 
 def _resolve_from_freefix_root(path_value: Optional[str], freefix_root: str) -> Optional[str]:
@@ -226,6 +239,7 @@ def run_eval(cfg: Config) -> None:
         print("[dry-run] eval base_dir:", synced_base_dir)
         print("[dry-run] eval_test:", cfg.eval_test)
         print("[dry-run] test_from_train:", cfg.test_from_train)
+        print("[dry-run] eval checkpoints: load_step and exp_name")
         return
 
     _ensure_freefix_on_path(cfg.freefix_root)
@@ -234,19 +248,20 @@ def run_eval(cfg: Config) -> None:
 
     merged_cfg = OmegaConf.merge(OmegaConf.load(base_cfg_path), OmegaConf.load(exp_cfg_path))
     _sync_exp_base_dir(cfg, merged_cfg)
-    freefix_eval(
-        merged_cfg,
-        load_step=int(merged_cfg.load_step),
-        eval_test=bool(cfg.eval_test),
-        test_from_train=bool(cfg.test_from_train),
-    )
+    for load_step in (int(merged_cfg.load_step), str(merged_cfg.exp_name)):
+        freefix_eval(
+            merged_cfg,
+            load_step=load_step,
+            eval_test=bool(cfg.eval_test),
+            test_from_train=bool(cfg.test_from_train),
+        )
 
 
 def parse_args() -> Config:
-    parser = argparse.ArgumentParser(description="Official FreeFix runner wrapper.")
+    parser = argparse.ArgumentParser(description="Local FreeFix runner wrapper.")
     parser.add_argument("--config", type=str, default=None, help="Optional JSON config file.")
     parser.add_argument("--stage", type=str, default="full", choices=["recon", "refine", "eval", "full"])
-    parser.add_argument("--freefix_root", type=str, default="/mntdatalora/src/Diffusion-IBR/works/FreeFix")
+    parser.add_argument("--freefix_root", type=str, default="/mntdatalora/src/Diffusion-IBR/scripts/freefix_impl")
     parser.add_argument("--cache_root", type=str, default="/mntdatalora/src/Diffusion-IBR/cache_weights")
     parser.add_argument("--cuda_device", type=str, default=None)
     parser.add_argument("--dry_run", action="store_true")

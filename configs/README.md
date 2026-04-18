@@ -4,8 +4,8 @@ These JSON files are loaded with `--config` in `scripts/trainers/trainer.py`.
 
 ## Available presets
 
-- `difix3d_train.json`: DIFIX3D training with progressive pose updates and no post-render enhancer.
-- `difix3d_plus_train.json`: DIFIX3D+ training schedule with progressive pose updates and post-render enhancer disabled by default.
+- `difix3d_train.json`: DIFIX3D training preset aligned with the released gsplat checkpoint settings.
+- `difix3d_plus_train.json`: DIFIX3D+ training preset with progressive pose updates and post-render enhancement enabled.
 - `freefix_self_flux.json`: Self-sufficient FreeFix pipeline preset using FLUX backend.
 - `freefix_self_sdxl.json`: Self-sufficient FreeFix pipeline preset using SDXL backend.
 

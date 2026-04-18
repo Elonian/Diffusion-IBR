@@ -21,17 +21,11 @@ def _resolve_hf_cache_root() -> str:
     return hf_hub_cache
 
 
-def _resolve_difix_root() -> str:
-    return os.environ.get(
-        "DIFFUSION_IBR_DIFIX_ROOT",
-        "/mntdatalora/src/Diffusion-IBR/works/Difix3D",
-    )
-
-
 def _ensure_import_path(path: str) -> None:
     resolved = str(Path(path).resolve())
-    if resolved not in sys.path:
-        sys.path.insert(0, resolved)
+    if resolved in sys.path:
+        sys.path.remove(resolved)
+    sys.path.insert(0, resolved)
 
 
 class CustomDifixFixer:
@@ -46,36 +40,26 @@ class CustomDifixFixer:
         device: str = "cuda",
         torch_dtype: Optional[torch.dtype] = None,
         cache_dir: Optional[str] = None,
-        difix_root: Optional[str] = None,
     ) -> None:
         self.device = device
         self.cache_dir = cache_dir or _resolve_hf_cache_root()
-        self.difix_root = difix_root or _resolve_difix_root()
-        _ensure_import_path(self.difix_root)
-        if torch_dtype is None:
-            torch_dtype = torch.float16 if "cuda" in device else torch.float32
+        project_root = Path(__file__).resolve().parents[2]
+        _ensure_import_path(str(project_root))
 
         source = model_path if model_path is not None else model_id
         try:
-            # Prefer the official Difix3D custom pipeline class.
-            from src.pipeline_difix import DifixPipeline  # type: ignore
+            from scripts.priors.src.pipeline_difix import DifixPipeline
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to import the local vendored DifixPipeline from scripts/priors/src/pipeline_difix.py."
+            ) from exc
 
-            self.pipe = DifixPipeline.from_pretrained(
-                source,
-                trust_remote_code=True,
-                torch_dtype=torch_dtype,
-                cache_dir=self.cache_dir,
-            )
-        except Exception:
-            # Fallback for environments where official class import is unavailable.
-            from diffusers import DiffusionPipeline
-
-            self.pipe = DiffusionPipeline.from_pretrained(
-                source,
-                trust_remote_code=True,
-                torch_dtype=torch_dtype,
-                cache_dir=self.cache_dir,
-            )
+        load_kwargs = {
+            "cache_dir": self.cache_dir,
+        }
+        if torch_dtype is not None:
+            load_kwargs["torch_dtype"] = torch_dtype
+        self.pipe = DifixPipeline.from_pretrained(source, **load_kwargs)
         self.pipe = self.pipe.to(self.device)
         self.pipe.set_progress_bar_config(disable=True)
 
@@ -115,6 +99,7 @@ class CustomDifixFixer:
         num_inference_steps: int = 1,
         timestep: int = 199,
         guidance_scale: float = 0.0,
+        generator: Optional[torch.Generator] = None,
     ) -> Image.Image:
         # -------- 1) Normalize inputs --------
         image_pil = self._to_pil(image)
@@ -132,6 +117,8 @@ class CustomDifixFixer:
         }
         if ref_image_pil is not None:
             kwargs["ref_image"] = ref_image_pil
+        if generator is not None:
+            kwargs["generator"] = generator
 
         # -------- 3) Run pretrained DIFIX model --------
         output = self.pipe(**kwargs).images[0]

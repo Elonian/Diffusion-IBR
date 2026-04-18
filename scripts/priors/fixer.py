@@ -8,8 +8,10 @@ import torch
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+project_root_str = str(PROJECT_ROOT)
+if project_root_str in sys.path:
+    sys.path.remove(project_root_str)
+sys.path.insert(0, project_root_str)
 
 from scripts.priors.difix import CustomDifixFixer
 from scripts.priors.flux import CustomFluxFixer
@@ -31,6 +33,7 @@ class DiffusionFixer:
         if backend not in {"flux", "sdxl", "difix"}:
             raise ValueError("backend must be one of: flux, sdxl, difix")
         self.backend = backend
+        self.device = device
         if backend == "difix" and difix_model_path is None:
             local_difix = PROJECT_ROOT / "cache_weights" / "difix_ref"
             if local_difix.exists():
@@ -48,6 +51,17 @@ class DiffusionFixer:
                 device=device,
             )
 
+    def _build_generator(self, seed: int) -> torch.Generator:
+        device = self.device
+        if device == "mps":
+            device = "cpu"
+        try:
+            generator = torch.Generator(device=device)
+        except (RuntimeError, TypeError):
+            generator = torch.Generator()
+        generator.manual_seed(int(seed))
+        return generator
+
     def __call__(
         self,
         prompt: str,
@@ -60,17 +74,18 @@ class DiffusionFixer:
         mask_scheduler: Optional[list[int]] = None,
         guide_until: Optional[int] = None,
         warp_until: Optional[int] = None,
-        num_inference_steps: int = 50,
+        num_inference_steps: Optional[int] = None,
         strength: float = 0.6,
-        guidance_scale: float = 3.5,
+        guidance_scale: Optional[float] = None,
         timestep: int = 199,
-        seed: int = 64,
+        seed: Optional[int] = 64,
     ) -> Image.Image:
-        # -------- 1) Build deterministic generator --------
-        generator = torch.manual_seed(seed)
-
-        # -------- 2) Dispatch to selected custom fixer backend --------
+        # -------- 1) Dispatch to selected custom fixer backend --------
         if self.backend == "difix":
+            if guidance_scale is None:
+                guidance_scale = 0.0
+            if num_inference_steps is None:
+                num_inference_steps = 1
             return self.model(
                 prompt=prompt,
                 image=image,
@@ -78,8 +93,16 @@ class DiffusionFixer:
                 num_inference_steps=num_inference_steps,
                 timestep=timestep,
                 guidance_scale=guidance_scale,
+                generator=None,
             )
 
+        generator = self._build_generator(64 if seed is None else seed)
+
+        # -------- 2) Run deterministic non-DIFIX fixer backend --------
+        if num_inference_steps is None:
+            num_inference_steps = 50
+        if guidance_scale is None:
+            guidance_scale = 3.5
         return self.model(
             prompt=prompt,
             negative_prompt=negative_prompt,
@@ -112,10 +135,10 @@ def main() -> None:
     parser.add_argument("--mask", type=str, default=None, help="Optional grayscale mask path")
     parser.add_argument("--warp_image", type=str, default=None, help="Optional warp/reference image path")
     parser.add_argument("--warp_mask", type=str, default=None, help="Optional warp mask path")
-    parser.add_argument("--steps", type=int, default=50, help="Number of denoising steps")
+    parser.add_argument("--steps", type=int, default=None, help="Number of denoising steps")
     parser.add_argument("--timestep", type=int, default=199, help="Single-step diffusion timestep (DIFIX)")
     parser.add_argument("--strength", type=float, default=0.6, help="Img2img strength")
-    parser.add_argument("--guidance_scale", type=float, default=3.5, help="CFG scale")
+    parser.add_argument("--guidance_scale", type=float, default=None, help="CFG scale; backend default when omitted")
     parser.add_argument("--seed", type=int, default=64, help="Random seed")
     parser.add_argument("--difix_model_id", type=str, default="nvidia/difix_ref", help="DIFIX model id")
     parser.add_argument("--difix_model_path", type=str, default=None, help="Optional local DIFIX model path")

@@ -32,10 +32,9 @@ def resolve_hf_cache_root() -> str:
 
 def resolve_freefix_root() -> str:
     # Backward-compatible helper retained for older code paths.
-    # The self-sufficient FreeFix path in this repo does not require this.
     return os.environ.get(
         "DIFFUSION_IBR_FREEFIX_ROOT",
-        "/mntdatalora/src/Diffusion-IBR",
+        "/mntdatalora/src/Diffusion-IBR/scripts/freefix_impl",
     )
 
 

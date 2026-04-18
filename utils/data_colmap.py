@@ -4,6 +4,7 @@ COLMAP parsing utilities for standalone training scripts.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Dict, List, Optional, Tuple
 
@@ -81,6 +82,10 @@ def _distortion_from_camera(camera: object) -> np.ndarray:
         if params.size < 8:
             return np.empty(0, dtype=np.float32)
         return np.array([params[4], params[5], params[6], params[7]], dtype=np.float32)
+    if model == "OPENCV_FISHEYE":
+        if params.size < 8:
+            return np.empty(0, dtype=np.float32)
+        return np.array([params[4], params[5], params[6], params[7]], dtype=np.float32)
     # Fisheye and other unsupported undistortion models are left as-is.
     return np.empty(0, dtype=np.float32)
 
@@ -147,7 +152,7 @@ class ColmapParser:
         factor: int = 1,
         normalize: bool = True,
         test_every: int = 8,
-        align_principal_axes: bool = False,
+        align_principal_axes: bool = True,
     ) -> None:
         self.data_dir = data_dir
         self.factor = factor
@@ -212,8 +217,28 @@ class ColmapParser:
         camtoworlds = camtoworlds[inds]
         camera_ids = [camera_ids[i] for i in inds]
 
+        # Match the official gsplat metadata handling used by Difix3D.
+        self.extconf = {
+            "spiral_radius_scale": 1.0,
+            "no_factor_suffix": False,
+        }
+        extconf_file = os.path.join(data_dir, "ext_metadata.json")
+        if os.path.exists(extconf_file):
+            with open(extconf_file, "r", encoding="utf-8") as f:
+                extconf = json.load(f)
+            if isinstance(extconf, dict):
+                self.extconf.update(extconf)
+
+        self.bounds = np.array([0.01, 1.0], dtype=np.float32)
+        pose_bounds_file = os.path.join(data_dir, "poses_bounds.npy")
+        if os.path.exists(pose_bounds_file):
+            self.bounds = np.load(pose_bounds_file)[:, -2:].astype(np.float32)
+
         # Resolve image directories and map COLMAP names to downsampled images.
-        image_dir_suffix = f"_{factor}" if factor > 1 else ""
+        if factor > 1 and not bool(self.extconf.get("no_factor_suffix", False)):
+            image_dir_suffix = f"_{factor}"
+        else:
+            image_dir_suffix = ""
         colmap_image_dir = os.path.join(data_dir, "images")
         image_dir = os.path.join(data_dir, "images" + image_dir_suffix)
         if not os.path.exists(image_dir):
@@ -223,10 +248,30 @@ class ColmapParser:
         if not os.path.exists(colmap_image_dir):
             colmap_image_dir = image_dir
 
-        colmap_files = sorted(_get_rel_paths(colmap_image_dir))
-        image_files = sorted(_get_rel_paths(image_dir))
-        colmap_to_image = dict(zip(colmap_files, image_files))
-        image_paths = [os.path.join(image_dir, colmap_to_image.get(name, name)) for name in image_names]
+        if "3dv-dataset-nerfstudio" in data_dir:
+            colmap_files = sorted(
+                _get_rel_paths(colmap_image_dir),
+                key=lambda x: int(x.split(".")[0].split("_")[-1]),
+            )
+            image_files = sorted(
+                _get_rel_paths(image_dir),
+                key=lambda x: int(x.split(".")[0].split("_")[-1]),
+            )
+            colmap_to_image = dict(zip(colmap_files, image_files))
+            image_names = colmap_files
+            image_paths = [os.path.join(image_dir, colmap_to_image[f]) for f in image_names]
+        elif "DL3DV-Benchmark" in data_dir or "DL3DV-10K-Benchmark" in data_dir:
+            colmap_files = sorted(_get_rel_paths(colmap_image_dir))
+            image_files = sorted(_get_rel_paths(image_dir))
+            colmap_to_image = dict(zip(colmap_files, image_files))
+            if len(colmap_files) != len(image_names):
+                image_names = colmap_files
+            image_paths = [os.path.join(image_dir, colmap_to_image.get(f, f)) for f in image_names]
+        else:
+            colmap_files = sorted(_get_rel_paths(colmap_image_dir))
+            image_files = sorted(_get_rel_paths(image_dir))
+            colmap_to_image = dict(zip(colmap_files, image_files))
+            image_paths = [os.path.join(image_dir, colmap_to_image.get(name, name)) for name in image_names]
 
         # 3D points.
         points3d = rec.points3D
@@ -287,24 +332,71 @@ class ColmapParser:
             if len(params) == 0:
                 continue
             model = model_name_dict.get(cam_id, "")
-            if model not in {"SIMPLE_RADIAL", "RADIAL", "OPENCV", "FULL_OPENCV"}:
-                continue
 
             k_mat = ks_dict[cam_id]
             width, height = imsize_dict[cam_id]
-            k_undist, roi = cv2.getOptimalNewCameraMatrix(k_mat, params, (width, height), 0)
-            mapx, mapy = cv2.initUndistortRectifyMap(
-                k_mat,
-                params,
-                None,
-                k_undist,
-                (width, height),
-                cv2.CV_32FC1,
-            )
+            mask: Optional[np.ndarray]
+            if model in {"SIMPLE_RADIAL", "RADIAL", "OPENCV", "FULL_OPENCV"}:
+                k_undist, roi = cv2.getOptimalNewCameraMatrix(k_mat, params, (width, height), 0)
+                mapx, mapy = cv2.initUndistortRectifyMap(
+                    k_mat,
+                    params,
+                    None,
+                    k_undist,
+                    (width, height),
+                    cv2.CV_32FC1,
+                )
+                mask = None
+            elif model == "OPENCV_FISHEYE":
+                fx = float(k_mat[0, 0])
+                fy = float(k_mat[1, 1])
+                cx = float(k_mat[0, 2])
+                cy = float(k_mat[1, 2])
+                grid_x, grid_y = np.meshgrid(
+                    np.arange(width, dtype=np.float32),
+                    np.arange(height, dtype=np.float32),
+                    indexing="xy",
+                )
+                x1 = (grid_x - cx) / max(fx, 1e-8)
+                y1 = (grid_y - cy) / max(fy, 1e-8)
+                theta = np.sqrt(x1**2 + y1**2)
+                r = (
+                    1.0
+                    + params[0] * theta**2
+                    + params[1] * theta**4
+                    + params[2] * theta**6
+                    + params[3] * theta**8
+                )
+                mapx = fx * x1 * r + width // 2
+                mapy = fy * y1 * r + height // 2
+
+                valid_mask = np.logical_and(
+                    np.logical_and(mapx > 0, mapy > 0),
+                    np.logical_and(mapx < width - 1, mapy < height - 1),
+                )
+                if np.any(valid_mask):
+                    y_indices, x_indices = np.nonzero(valid_mask)
+                    y_min, y_max = int(y_indices.min()), int(y_indices.max()) + 1
+                    x_min, x_max = int(x_indices.min()), int(x_indices.max()) + 1
+                    mask = valid_mask[y_min:y_max, x_min:x_max]
+                    k_undist = k_mat.copy()
+                    k_undist[0, 2] -= x_min
+                    k_undist[1, 2] -= y_min
+                    roi = (x_min, y_min, x_max - x_min, y_max - y_min)
+                else:
+                    mask = None
+                    k_undist = k_mat.copy()
+                    roi = (0, 0, width, height)
+            else:
+                continue
+
             ks_dict[cam_id] = k_undist.astype(np.float32)
             mapx_dict[cam_id] = mapx
             mapy_dict[cam_id] = mapy
-            roi_undist_dict[cam_id] = tuple(int(v) for v in roi)
+            roi_undist = tuple(int(v) for v in roi)
+            roi_undist_dict[cam_id] = roi_undist
+            imsize_dict[cam_id] = (roi_undist[2], roi_undist[3])
+            mask_dict[cam_id] = None if mask is None else mask.astype(bool)
 
         self.image_names = image_names
         self.image_paths = image_paths

@@ -272,6 +272,8 @@ if [[ "${STRICT_OFFICIAL_DIFIX}" == "1" ]]; then
   EXTRA_ARGS+=(
     --training_recipe difix3d
     --use_difix
+    --no-normalize_world
+    --no-lazy_fixer_init
     --difix_start_step 3000
     --difix_fix_every 3000
     --fix_steps "${OFFICIAL_FIX_STEPS}"
@@ -306,7 +308,11 @@ else
   fi
 fi
 
-if [[ "${LAZY_FIXER_INIT:-}" == "0" ]]; then
+if [[ "${STRICT_OFFICIAL_DIFIX}" == "1" ]]; then
+  if [[ -n "${LAZY_FIXER_INIT:-}" ]]; then
+    echo "[warn] Ignoring LAZY_FIXER_INIT because STRICT_OFFICIAL_DIFIX=1."
+  fi
+elif [[ "${LAZY_FIXER_INIT:-}" == "0" ]]; then
   EXTRA_ARGS+=(--no-lazy_fixer_init)
 elif [[ "${LAZY_FIXER_INIT:-}" == "1" ]]; then
   EXTRA_ARGS+=(--lazy_fixer_init)

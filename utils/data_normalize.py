@@ -122,7 +122,7 @@ def transform_cameras(matrix: np.ndarray, camtoworlds: np.ndarray) -> np.ndarray
 def normalize_cameras_and_points(
     camtoworlds: np.ndarray,
     points: Optional[np.ndarray] = None,
-    align_axes: bool = False,
+    align_axes: bool = True,
 ) -> Tuple[np.ndarray, Optional[np.ndarray], np.ndarray]:
     """
     Normalize camera poses, optionally with 3D points for principal-axis alignment.
@@ -144,3 +144,21 @@ def normalize_cameras_and_points(
         points = transform_points(t2, points)
         total = t2 @ total
     return camtoworlds, points, total
+
+
+def normalize(camtoworlds: np.ndarray, points: Optional[np.ndarray] = None):
+    """
+    Official gsplat-compatible normalization wrapper.
+
+    With points, this always applies principal-axis alignment and returns
+    (camtoworlds, points, transform). Without points, it returns
+    (camtoworlds, transform), matching the reference helper.
+    """
+    camtoworlds, points_out, transform = normalize_cameras_and_points(
+        camtoworlds,
+        points=points,
+        align_axes=True,
+    )
+    if points is None:
+        return camtoworlds, transform
+    return camtoworlds, points_out, transform

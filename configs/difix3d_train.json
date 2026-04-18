@@ -2,7 +2,7 @@
   "training_recipe": "difix3d",
   "use_difix": true,
   "train_split_all": false,
-  "normalize_world": true,
+  "normalize_world": false,
   "normalize_align_axes": false,
   "data_factor": 4,
   "test_every": 8,
@@ -24,5 +24,6 @@
   "difix_novel_lambda": 0.3,
   "difix_progressive_updates": true,
   "difix_progressive_pose_step": 0.5,
+  "lazy_fixer_init": false,
   "difix_post_render": false
 }

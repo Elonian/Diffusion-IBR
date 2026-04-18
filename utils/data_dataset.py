@@ -64,18 +64,25 @@ class ColmapImageDataset(Dataset):
                 raise ValueError(f"Unknown split_strategy: {split_strategy}")
 
             test_every = int(getattr(parser, "test_every", 8))
+            image_names = list(getattr(parser, "image_names", []))
+            has_tagged_split = test_every == 1 and any(
+                "_train_" in name or "_eval_" in name for name in image_names
+            )
             if test_every == 0 or split_strategy == "all":
                 self.indices = idx
             elif split_strategy == "train_eval_tags":
-                names = list(getattr(parser, "image_names", []))
                 if split == "train":
-                    self.indices = np.array([i for i in idx if "_train_" in names[i]], dtype=np.int64)
+                    self.indices = np.array([i for i in idx if "_train_" in image_names[i]], dtype=np.int64)
                 elif split in {"test", "val"}:
-                    self.indices = np.array([i for i in idx if "_eval_" in names[i]], dtype=np.int64)
+                    self.indices = np.array([i for i in idx if "_eval_" in image_names[i]], dtype=np.int64)
                 else:
                     raise ValueError(f"Unknown split: {split}")
             elif split_strategy == "difix3d":
-                if split == "train":
+                if has_tagged_split and split == "train":
+                    self.indices = np.array([i for i in idx if "_train_" in image_names[i]], dtype=np.int64)
+                elif has_tagged_split and split in {"test", "val"}:
+                    self.indices = np.array([i for i in idx if "_eval_" in image_names[i]], dtype=np.int64)
+                elif split == "train":
                     self.indices = idx[idx % max(test_every, 1) == 0]
                 elif split in {"test", "val"}:
                     self.indices = idx[idx % max(test_every, 1) != 0]
@@ -110,8 +117,6 @@ class ColmapImageDataset(Dataset):
             image = cv2.remap(image, mapx, mapy, cv2.INTER_LINEAR)
             x, y, w, h = self.parser.roi_undist_dict[camera_id]
             image = image[y : y + h, x : x + w]
-            k_mat[0, 2] -= x
-            k_mat[1, 2] -= y
 
         if self.patch_size is not None:
             h, w = image.shape[:2]
