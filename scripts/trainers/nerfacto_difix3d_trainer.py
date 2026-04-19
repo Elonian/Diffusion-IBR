@@ -86,7 +86,7 @@ def _parse_args() -> argparse.Namespace:
 
     parser.add_argument("--load_checkpoint", type=Path, default=None)
     parser.add_argument("--downscale_factor", type=int, default=4)
-    parser.add_argument("--eval_mode", choices=["fraction", "filename", "interval", "all"], default="filename")
+    parser.add_argument("--eval_mode", choices=["fraction", "filename", "interval", "all"], default="interval")
     parser.add_argument("--train_split_fraction", type=float, default=0.9)
     parser.add_argument("--eval_interval", type=int, default=8)
     parser.add_argument("--orientation_method", choices=["pca", "up", "vertical", "none"], default="none")

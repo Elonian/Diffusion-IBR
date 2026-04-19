@@ -29,6 +29,7 @@ class FreeFixSceneAssets:
     num_images: int
     num_train: int
     num_test: int
+    num_refine: int
     partition_path: str
     exp_cfg_path: str
     metadata_path: str
@@ -78,8 +79,10 @@ def build_partition_indices(
         train_indices = [idx for idx in range(num_images) if idx % test_every == 0]
         test_indices = [idx for idx in range(num_images) if idx % test_every != 0]
     else:
+        # Official FreeFix COLMAP training uses every image when no partition
+        # is supplied, while evaluation/test views are still idx % test_every == 0.
         test_indices = [idx for idx in range(num_images) if idx % test_every == 0]
-        train_indices = [idx for idx in range(num_images) if idx % test_every != 0]
+        train_indices = list(range(num_images))
     if len(train_indices) == 0 or len(test_indices) == 0:
         raise ValueError(
             f"Invalid split: num_images={num_images}, test_every={test_every}, "
@@ -119,10 +122,11 @@ def write_partition_file(
 
 
 def _backend_defaults(backend: str) -> tuple[str, float, list[str]]:
-    # Keep defaults close to the released FreeFix MipNeRF examples.
+    # Match the official FreeFix base config. Scene-specific official configs
+    # can still override these values through the generated exp cfg.
     if backend == "flux":
-        return "flux", 0.6, ["means", "quats", "scales"]
-    return "sdxl", 0.6, ["means", "quats", "scales"]
+        return "flux", 0.5, ["means"]
+    return "sdxl", 0.5, ["means"]
 
 
 def build_exp_cfg_text(
@@ -133,12 +137,13 @@ def build_exp_cfg_text(
     negative_prompt: str,
     num_train: int,
     num_test: int,
+    refine_num_views: int = 0,
     strength: Optional[float] = None,
     hessian_attr: Optional[list[str]] = None,
     num_inference_steps: int = 50,
     guide_ratio: float = 1.0,
     warp_ratio: float = 0.5,
-    refine_steps: int = 400,
+    refine_steps: int = 300,
     gen_prob: float = 0.1,
     gen_loss_weight: float = 0.2,
     affine: bool = True,
@@ -148,13 +153,14 @@ def build_exp_cfg_text(
     exp_name, default_strength, default_hessian_attr = _backend_defaults(backend)
     effective_strength = default_strength if strength is None else float(strength)
     effective_hessian_attr = default_hessian_attr if hessian_attr is None else list(hessian_attr)
+    refine_end_idx = int(num_test) if int(refine_num_views) <= 0 else min(int(refine_num_views), int(num_test))
     hessian_text = ", ".join(_yaml_quote(v) for v in effective_hessian_attr)
 
     return f"""base_dir: {_yaml_quote(str(output_dir))}
 exp_name: {exp_name}
 gs_cfg_file: "cfg.json"
 refine_start_idx: 0
-refine_end_idx: {int(num_test)}
+refine_end_idx: {refine_end_idx}
 train_start_idx: 0
 train_end_idx: {int(num_train)}
 test_split: test
@@ -188,12 +194,13 @@ def generate_freefix_scene_assets(
     test_every: int = 8,
     prompt: str = DEFAULT_PROMPT,
     negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
+    refine_num_views: int = 0,
     strength: Optional[float] = None,
     hessian_attr: Optional[list[str]] = None,
     num_inference_steps: int = 50,
     guide_ratio: float = 1.0,
     warp_ratio: float = 0.5,
-    refine_steps: int = 400,
+    refine_steps: int = 300,
     gen_prob: float = 0.1,
     gen_loss_weight: float = 0.2,
     affine: bool = True,
@@ -211,6 +218,7 @@ def generate_freefix_scene_assets(
         int(test_every),
         split_mode=normalized_split_mode,
     )
+    num_refine = len(test_indices) if int(refine_num_views) <= 0 else min(int(refine_num_views), len(test_indices))
 
     partition_path = write_partition_file(
         scene_id=scene_id,
@@ -233,6 +241,7 @@ def generate_freefix_scene_assets(
         negative_prompt=negative_prompt,
         num_train=len(train_indices),
         num_test=len(test_indices),
+        refine_num_views=num_refine,
         strength=strength,
         hessian_attr=hessian_attr,
         num_inference_steps=num_inference_steps,
@@ -256,6 +265,7 @@ def generate_freefix_scene_assets(
         num_images=num_images,
         num_train=len(train_indices),
         num_test=len(test_indices),
+        num_refine=num_refine,
         partition_path=str(partition_path),
         exp_cfg_path=str(exp_cfg_path),
         metadata_path=str(metadata_path),

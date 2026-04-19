@@ -105,7 +105,7 @@ class CustomDifixFixer:
         image_pil = self._to_pil(image)
         ref_image_pil = None
         if ref_image is not None:
-            ref_image_pil = self._to_pil(ref_image).resize(image_pil.size, Image.LANCZOS)
+            ref_image_pil = self._to_pil(ref_image)
 
         # -------- 2) Build DIFIX kwargs --------
         kwargs = {

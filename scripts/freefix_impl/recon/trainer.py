@@ -349,7 +349,8 @@ class Runner:
 
         # Load data: Training data should contain initial points and colors.
         if cfg.partition is not None:
-            cfg.partition = f"{cfg.data_dir}/{cfg.partition}"
+            if not os.path.isabs(cfg.partition):
+                cfg.partition = f"{cfg.data_dir}/{cfg.partition}"
         if cfg.partition is None and os.path.exists(f"{cfg.data_dir}/partition.json"):
             cfg.partition = f"{cfg.data_dir}/partition.json"
 

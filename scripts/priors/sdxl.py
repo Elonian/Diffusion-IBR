@@ -17,6 +17,16 @@ sys.path.insert(0, project_root_str)
 from scripts.priors._utils import resolve_hf_cache_root, to_mask_stack, to_pil_image
 
 
+def _image_size(image: Union[Image.Image, torch.Tensor, np.ndarray]) -> tuple[int, int]:
+    if isinstance(image, Image.Image):
+        return image.size
+    if isinstance(image, torch.Tensor):
+        if image.ndim == 3 and image.shape[0] in (1, 3):
+            return int(image.shape[2]), int(image.shape[1])
+        return int(image.shape[1]), int(image.shape[0])
+    return int(image.shape[1]), int(image.shape[0])
+
+
 class CustomSDXLFixer:
     """
     Local FreeFix SDXL backend using the vendored official FreeFix pipeline.
@@ -59,23 +69,24 @@ class CustomSDXLFixer:
             ]
         ] = None,
         mask_scheduler: Optional[list[int]] = None,
-        guide_until: Optional[int] = None,
+        guide_until: Optional[float] = None,
         warp_image: Optional[Union[Image.Image, torch.Tensor, np.ndarray]] = None,
-        warp_until: Optional[int] = None,
+        warp_until: Optional[float] = None,
         warp_mask: Optional[Union[Image.Image, torch.Tensor, np.ndarray]] = None,
         height: Optional[int] = None,
         width: Optional[int] = None,
         guidance_scale: float = 3.5,
         num_inference_steps: int = 50,
         generator: Optional[torch.Generator] = None,
-        strength: float = 0.6,
+        strength: float = 0.5,
     ) -> Image.Image:
-        input_image = to_pil_image(image)
+        input_image = image if isinstance(image, torch.Tensor) else to_pil_image(image)
         if width is None or height is None:
-            width, height = input_image.size
+            width, height = _image_size(input_image)
         width = int(width)
         height = int(height)
-        input_image = input_image.resize((width, height), Image.LANCZOS)
+        if isinstance(input_image, Image.Image):
+            input_image = input_image.resize((width, height), Image.LANCZOS)
 
         mask_tensor = None
         if mask is not None:
@@ -85,7 +96,10 @@ class CustomSDXLFixer:
 
         warp_image_pil = None
         if warp_image is not None:
-            warp_image_pil = to_pil_image(warp_image).resize((width, height), Image.LANCZOS)
+            if isinstance(warp_image, torch.Tensor):
+                warp_image_pil = warp_image
+            else:
+                warp_image_pil = to_pil_image(warp_image).resize((width, height), Image.LANCZOS)
 
         warp_mask_tensor = None
         if warp_mask is not None:
@@ -99,8 +113,8 @@ class CustomSDXLFixer:
             mask_scheduler=mask_scheduler,
             warp_image=warp_image_pil,
             warp_mask=warp_mask_tensor,
-            guide_until=0 if guide_until is None else int(guide_until),
-            warp_until=0 if warp_until is None else int(warp_until),
+            guide_until=0 if guide_until is None else guide_until,
+            warp_until=0 if warp_until is None else warp_until,
             height=height,
             width=width,
             guidance_scale=float(guidance_scale),

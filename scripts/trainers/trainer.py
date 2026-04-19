@@ -1,8 +1,6 @@
 """
-Standalone 3DGS trainer with optional Difix3D+-style iterative refinement.
-
-Exact FreeFix runs are handled by scripts/trainers/freefix_official_runner.py,
-which executes the local FreeFix port under scripts/freefix_impl.
+Standalone 3DGS trainer with vanilla, FreeFix-style, and Difix3D+-style
+refinement modes.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -37,6 +35,7 @@ if project_root_str in sys.path:
 sys.path.insert(0, project_root_str)
 
 from scripts._local_utils import (
+    CameraPoseInterpolator,
     ColmapImageDataset,
     ColmapParser,
     compute_psnr as _compute_psnr,
@@ -54,7 +53,9 @@ from scripts._local_utils import (
     simple_ssim as _simple_ssim,
     soft_sigmoid as _soft_sigmoid,
 )
-from scripts.priors.fixer import DiffusionFixer
+
+if TYPE_CHECKING:
+    from scripts.priors.fixer import DiffusionFixer
 
 OFFICIAL_VANILLA_LRS: Dict[str, float] = {
     "means_lr": 1.6e-4,
@@ -150,7 +151,7 @@ class Config:
     seed: int = 42
     device: str = "cuda"
     mode: str = "train"  # train | eval | render | train_eval
-    ckpt: Optional[str] = None
+    ckpt: Optional[List[str]] = None
     render_frames: int = 120
     render_fps: int = 24
     render_traj_path: str = "interp"  # interp | ellipse | spiral
@@ -174,6 +175,7 @@ class Config:
     difix_guidance_scale: float = 0.0
     difix_novel_prob: float = 0.3
     difix_novel_lambda: float = 0.3
+    difix_allow_from_scratch: bool = False
     difix_progressive_updates: bool = True
     difix_progressive_pose_step: float = 0.5
     difix_post_render: bool = False
@@ -193,13 +195,15 @@ class Config:
     freefix_fix_every: int = 400
     freefix_num_views: int = 0
     freefix_num_inference_steps: int = 50
-    freefix_strength: float = 0.6
+    freefix_strength: float = 0.5
     freefix_guidance_scale: float = 3.5
     freefix_novel_prob: float = 0.1
     freefix_novel_lambda: float = 0.2
     freefix_real_lambda: float = 1.0
+    freefix_refine_steps: int = 300
+    freefix_use_affine: bool = True
     freefix_certainty_scales: str = "0.001,0.01,0.1"
-    freefix_hessian_attrs: str = "means,quats,scales"
+    freefix_hessian_attrs: str = "means"
     freefix_mask_center: float = 0.5
     freefix_mask_softness: float = 10.0
     freefix_mask_scheduler: str = "0.3,0.9,1.0"
@@ -280,19 +284,18 @@ class Trainer:
                 self.training_recipe = "freefix"
         if self.training_recipe not in {"vanilla", "freefix", "difix3d"}:
             raise ValueError("training_recipe must be one of: vanilla, freefix, difix3d")
-        if self.training_recipe == "freefix":
-            raise ValueError(
-                "Exact FreeFix is not implemented in scripts/trainers/trainer.py. "
-                "Use scripts/trainers/freefix_official_runner.py or "
-                "scripts/trainers/freefix_clean_runner.py; those wrappers execute "
-                "the local self-contained FreeFix port under scripts/freefix_impl "
-                "without importing works/FreeFix."
-            )
         self.cfg.training_recipe = self.training_recipe
         self._apply_vanilla_recipe_defaults()
         self._apply_difix3d_recipe_defaults()
-        # Vanilla GS and Difix3D both use the official gsplat train/val split.
-        split_strategy = "freefix" if self.training_recipe == "freefix" else "difix3d"
+        self._apply_freefix_recipe_defaults()
+        # Keep each recipe on its intended view split. Vanilla uses the dataset
+        # default so train_split_all and tagged train/eval scenes still apply.
+        if self.training_recipe == "freefix":
+            split_strategy = "freefix"
+        elif self.training_recipe == "difix3d":
+            split_strategy = "difix3d"
+        else:
+            split_strategy = "auto"
 
         self.parser = ColmapParser(
             data_dir=cfg.data_dir,
@@ -329,6 +332,7 @@ class Trainer:
         self.train_pose_bank = self.parser.camtoworlds[self.train_indices].astype(np.float32)
         # Official Difix3D progressive pose update starts from train poses.
         self.current_novel_poses = self.train_pose_bank.copy()
+        self.interpolator = CameraPoseInterpolator(rotation_weight=1.0, translation_weight=1.0)
         self.difix_progressive_pose_bank: Dict[int, np.ndarray] = {}
         self.ref_image_cache: Dict[Tuple[int, int, int], Image.Image] = {}
 
@@ -338,7 +342,20 @@ class Trainer:
             scene_scale=self.scene_scale,
         )
         if self.training_recipe == "vanilla":
-            self.strategy = DefaultStrategy(verbose=True)
+            self.strategy = DefaultStrategy(
+                verbose=True,
+                scene_scale=self.scene_scale,
+                prune_opa=cfg.strategy_prune_opa,
+                grow_grad2d=cfg.strategy_grow_grad2d,
+                grow_scale3d=cfg.strategy_grow_scale3d,
+                prune_scale3d=cfg.strategy_prune_scale3d,
+                refine_start_iter=cfg.strategy_refine_start_iter,
+                refine_stop_iter=cfg.strategy_refine_stop_iter,
+                reset_every=cfg.strategy_reset_every,
+                refine_every=cfg.strategy_refine_every,
+                absgrad=cfg.absgrad,
+                revised_opacity=False,
+            )
         elif self.training_recipe == "difix3d":
             self.strategy = DefaultStrategy()
         else:
@@ -365,6 +382,8 @@ class Trainer:
         self.novel_image_paths: List[str] = []
         self.novel_c2ws: List[np.ndarray] = []
         self.novel_camera_ids: List[int] = []
+        self.freefix_affines: Dict[str, torch.nn.Parameter] = {}
+        self.freefix_affine_optimizers: Dict[str, torch.optim.Optimizer] = {}
         self.fix_steps = _parse_steps_csv(cfg.fix_steps)
         self.eval_steps = _parse_steps_csv(cfg.eval_steps)
         self.save_steps = _parse_steps_csv(cfg.save_steps)
@@ -381,7 +400,7 @@ class Trainer:
             default=[0.3, 0.9, 1.0],
         )
 
-        self.fixer: Optional[DiffusionFixer] = None
+        self.fixer: Optional["DiffusionFixer"] = None
         self.fixer_enabled = self.training_recipe in {"difix3d", "freefix"}
         if self.training_recipe == "difix3d":
             print(
@@ -422,8 +441,6 @@ class Trainer:
         def steps_to_csv(steps: Tuple[int, ...]) -> str:
             return ",".join(str(step) for step in steps)
 
-        if not getattr(self.cfg, "_normalize_world_explicit", False):
-            self.cfg.normalize_world = False
         if self.cfg.max_steps == 30000:
             self.cfg.max_steps = 60000
         if self.cfg.fix_steps is None:
@@ -432,6 +449,29 @@ class Trainer:
             self.cfg.eval_steps = steps_to_csv(OFFICIAL_DIFIX3D_EVAL_STEPS)
         if self.cfg.save_steps is None:
             self.cfg.save_steps = steps_to_csv(OFFICIAL_DIFIX3D_SAVE_STEPS)
+        if not getattr(self.cfg, "_lazy_fixer_init_explicit", False):
+            self.cfg.lazy_fixer_init = False
+
+    def _apply_freefix_recipe_defaults(self) -> None:
+        if self.training_recipe != "freefix":
+            return
+        for name, legacy_value in LEGACY_REDUCED_LRS.items():
+            current_value = getattr(self.cfg, name)
+            if math.isclose(current_value, legacy_value, rel_tol=0.0, abs_tol=1e-12):
+                setattr(self.cfg, name, OFFICIAL_VANILLA_LRS[name])
+        # Native FreeFix is staged: train the base GS first, then load the
+        # diffusion prior for the post-training refinement pass.
+        if not getattr(self.cfg, "_lazy_fixer_init_explicit", False):
+            self.cfg.lazy_fixer_init = True
+        if self.cfg.save_steps is None:
+            self.cfg.save_steps = "7000,30000"
+
+    def _training_ssim_loss(self, colors: Tensor, pixels: Tensor) -> Tensor:
+        colors_nchw = colors.permute(0, 3, 1, 2)
+        pixels_nchw = pixels.permute(0, 3, 1, 2)
+        if self.training_recipe == "difix3d":
+            return 1.0 - _simple_ssim(colors_nchw, pixels_nchw, padding="valid")
+        return 1.0 - _simple_ssim(colors_nchw, pixels_nchw)
 
     def _ensure_eval_metrics(self):
         if self._eval_metric_cache is not None:
@@ -473,11 +513,13 @@ class Trainer:
             return self.cfg.freefix_start_step, self.cfg.freefix_fix_every
         return 0, 0
 
-    def _ensure_fixer(self) -> Optional[DiffusionFixer]:
+    def _ensure_fixer(self) -> Optional["DiffusionFixer"]:
         if not self.fixer_enabled:
             return None
         if self.fixer is not None:
             return self.fixer
+
+        from scripts.priors.fixer import DiffusionFixer
 
         cfg = self.cfg
         cache_dir = cfg.fix_cache_dir or cfg.difix_cache_dir
@@ -840,14 +882,51 @@ class Trainer:
         torch.save({"step": step, "splats": self.splats.state_dict()}, out)
         return out
 
-    def load_checkpoint(self, ckpt_path: str) -> int:
-        ckpt = torch.load(ckpt_path, map_location=self.device)
+    def _load_torch_checkpoint(self, ckpt_path: str) -> Dict[str, Any]:
+        try:
+            return torch.load(ckpt_path, map_location=self.device, weights_only=True)
+        except TypeError:
+            return torch.load(ckpt_path, map_location=self.device)
+
+    @staticmethod
+    def _normalize_ckpt_paths(ckpt_path: Any) -> List[str]:
+        if ckpt_path is None:
+            return []
+        if isinstance(ckpt_path, (list, tuple)):
+            paths: List[str] = []
+            for path in ckpt_path:
+                paths.extend(part.strip() for part in str(path).split(","))
+        else:
+            paths = [part.strip() for part in str(ckpt_path).split(",")]
+        return [path for path in paths if path]
+
+    def load_checkpoint(self, ckpt_path: Any) -> int:
+        ckpt_paths = self._normalize_ckpt_paths(ckpt_path)
+        if not ckpt_paths:
+            raise ValueError("No checkpoint path was provided.")
+        ckpts = [self._load_torch_checkpoint(path) for path in ckpt_paths]
+        missing = [path for path, ckpt in zip(ckpt_paths, ckpts) if "splats" not in ckpt]
+        if missing:
+            raise KeyError(f"Checkpoint(s) missing 'splats': {', '.join(missing)}")
+        if len(ckpts) == 1:
+            ckpt = ckpts[0]
+            for k in self.splats.keys():
+                self.splats[k].data = ckpt["splats"][k].to(self.device)
+            return int(ckpt.get("step", -1))
+
         for k in self.splats.keys():
-            self.splats[k].data = ckpt["splats"][k].to(self.device)
-        return int(ckpt.get("step", -1))
+            tensors = []
+            for path, ckpt in zip(ckpt_paths, ckpts):
+                if k not in ckpt["splats"]:
+                    raise KeyError(f"Checkpoint {path} missing splat tensor '{k}'.")
+                tensors.append(ckpt["splats"][k].to(self.device))
+            self.splats[k].data = torch.cat(tensors, dim=0)
+        return int(ckpts[0].get("step", -1))
 
     @torch.no_grad()
     def run_fixer_update(self, step: int) -> None:
+        if self.training_recipe != "difix3d":
+            return
         fixer = self._ensure_fixer()
         if fixer is None:
             return
@@ -886,9 +965,9 @@ class Trainer:
             if len(self.fix_steps) == 1 or not self.cfg.difix_progressive_updates:
                 render_poses_all = target_poses_all.copy()
             else:
-                render_poses_all = self._shift_poses_toward_targets(
-                    source_poses=self.current_novel_poses,
-                    target_poses=target_poses_all,
+                render_poses_all = self.interpolator.shift_poses(
+                    training_poses=self.current_novel_poses,
+                    testing_poses=target_poses_all,
                     distance=float(self.cfg.difix_progressive_pose_step),
                 )
         else:
@@ -1067,6 +1146,288 @@ class Trainer:
         self.novel_loader_iters.append(self.novel_loader_iter)
         print(f"[{self.training_recipe}] rebuilt novel loader with {len(novel_dataset)} fixed images")
 
+    def _configure_freefix_refine_strategy(self) -> None:
+        self.strategy = DefaultStrategy(
+            verbose=True,
+            prune_opa=self.cfg.strategy_prune_opa,
+            grow_grad2d=self.cfg.strategy_grow_grad2d,
+            grow_scale3d=self.cfg.strategy_grow_scale3d,
+            prune_scale3d=self.cfg.strategy_prune_scale3d,
+            refine_start_iter=100,
+            refine_stop_iter=5000,
+            reset_every=1500,
+            refine_every=200,
+            absgrad=self.cfg.absgrad,
+            revised_opacity=False,
+        )
+        self.strategy.check_sanity(self.splats, self.optimizers)
+        self.strategy_state = self.strategy.initialize_state()
+
+    def _reset_freefix_refine_optimizers(self) -> None:
+        for param in self.splats.values():
+            param.requires_grad = True
+        self.optimizers = {
+            "means": torch.optim.Adam([{"params": self.splats["means"], "lr": 1e-4 * self.scene_scale}]),
+            "scales": torch.optim.Adam([{"params": self.splats["scales"], "lr": 5e-3}]),
+            "quats": torch.optim.Adam([{"params": self.splats["quats"], "lr": 1e-3}]),
+            "opacities": torch.optim.Adam([{"params": self.splats["opacities"], "lr": 5e-2}]),
+            "sh0": torch.optim.Adam([{"params": self.splats["sh0"], "lr": 2.5e-3}]),
+            "shN": torch.optim.Adam([{"params": self.splats["shN"], "lr": 2.5e-3 / 20}]),
+        }
+        self.freefix_affines = {}
+        self.freefix_affine_optimizers = {}
+
+    def _ensure_freefix_affine(self, image_id: str) -> Optional[torch.nn.Parameter]:
+        if not self.cfg.freefix_use_affine:
+            return None
+        if image_id not in self.freefix_affines:
+            affine = torch.eye(3, 4, device=self.device)
+            self.freefix_affines[image_id] = torch.nn.Parameter(affine)
+            self.freefix_affine_optimizers[image_id] = torch.optim.Adam(
+                [self.freefix_affines[image_id]],
+                lr=1e-2,
+            )
+        return self.freefix_affines[image_id]
+
+    @staticmethod
+    def _is_freefix_refine_step(step: int, max_steps: int) -> bool:
+        if step <= max_steps * (1.0 / 3.0):
+            return step % 3 == 1
+        if step <= max_steps * (2.0 / 3.0):
+            return step % 5 == 1
+        return step % 8 == 1
+
+    def _native_freefix_refine(
+        self,
+        refine_cams: List[Dict[str, Any]],
+        train_cams: List[Dict[str, Any]],
+        train_prob: np.ndarray,
+        *,
+        max_steps: int,
+    ) -> None:
+        if max_steps <= 0:
+            return
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            self.optimizers["means"],
+            gamma=0.01 ** (1.0 / max(max_steps, 1)),
+        )
+
+        for refine_step in range(max_steps):
+            is_refine_step = self._is_freefix_refine_step(refine_step, max_steps)
+            if is_refine_step:
+                data = refine_cams[int(np.random.randint(0, len(refine_cams)))]
+            else:
+                normalized_prob = train_prob / np.sum(train_prob)
+                idx = int(np.random.choice(len(train_cams), 1, p=normalized_prob).item())
+                data = train_cams[idx]
+
+            is_gen = bool(data.get("Gen", False))
+            affine = self._ensure_freefix_affine(str(data["image_id"])) if is_gen else None
+            camtoworlds = data["camtoworld"][None, ...].float().to(self.device)
+            ks = data["K"][None, ...].float().to(self.device)
+            pixels = data["image"][None, ...].float().to(self.device) / 255.0
+            height, width = pixels.shape[1:3]
+
+            renders, _alphas, info = self.rasterize_splats(
+                camtoworlds=camtoworlds,
+                ks=ks,
+                width=width,
+                height=height,
+                sh_degree=self.cfg.sh_degree,
+                render_mode="RGB",
+            )
+            if affine is not None:
+                renders = renders @ affine[:3, :3] + affine[:3, 3]
+            colors = renders.clip(0.0, 1.0)
+
+            self.strategy.step_pre_backward(
+                params=self.splats,
+                optimizers=self.optimizers,
+                state=self.strategy_state,
+                step=refine_step,
+                info=info,
+            )
+
+            l1_loss = F.l1_loss(colors, pixels)
+            if is_gen:
+                loss = l1_loss * self.cfg.freefix_novel_lambda
+            else:
+                ssim_loss = self._training_ssim_loss(colors, pixels)
+                loss = l1_loss * (1.0 - self.cfg.ssim_lambda) + ssim_loss * self.cfg.ssim_lambda
+
+            loss.backward()
+
+            self.strategy.step_post_backward(
+                params=self.splats,
+                optimizers=self.optimizers,
+                state=self.strategy_state,
+                step=refine_step,
+                info=info,
+                packed=self.cfg.packed,
+            )
+
+            for optimizer in self.optimizers.values():
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+            if affine is not None:
+                affine_optimizer = self.freefix_affine_optimizers[str(data["image_id"])]
+                affine_optimizer.step()
+                affine_optimizer.zero_grad(set_to_none=True)
+            scheduler.step()
+
+            if (refine_step + 1) % 50 == 0 or refine_step == 0:
+                print(
+                    f"[freefix refine {refine_step+1:04d}/{max_steps}] "
+                    f"loss={loss.item():.4f} l1={l1_loss.item():.4f} gen={int(is_gen)}"
+                )
+
+    def run_native_freefix_refinement(self, step: int) -> None:
+        if self.training_recipe != "freefix" or len(self.testset) == 0:
+            return
+        fixer = self._ensure_fixer()
+        if fixer is None:
+            return
+
+        self._reset_freefix_refine_optimizers()
+        self._configure_freefix_refine_strategy()
+        cfg = self.cfg
+        n_views = len(self.testset) if cfg.freefix_num_views <= 0 else min(cfg.freefix_num_views, len(self.testset))
+        if n_views <= 0:
+            return
+
+        out_dir = self.render_dir / f"freefix_{cfg.freefix_backend}_native"
+        before_dir = out_dir / "before_refine"
+        after_dir = out_dir / "after_refine"
+        refine_render_dir = out_dir / "refine" / "render"
+        refine_gen_dir = out_dir / "refine" / "gen"
+        mask_root = out_dir / "refine" / "masks"
+        for path in (before_dir, after_dir, refine_render_dir, refine_gen_dir, mask_root):
+            path.mkdir(parents=True, exist_ok=True)
+        for scale in self.freefix_certainty_scales:
+            (mask_root / str(scale)).mkdir(parents=True, exist_ok=True)
+
+        infer_steps = self._build_freefix_infer_steps()
+        mask_scheduler = self._build_freefix_mask_scheduler(mask_count=len(self.freefix_certainty_scales))
+        guide_until = infer_steps * cfg.freefix_guide_ratio
+        freefix_generator = torch.manual_seed(64)
+
+        train_cams: List[Dict[str, Any]] = [self.trainset[j] for j in range(len(self.trainset))]
+        train_prob = np.ones((len(train_cams),), dtype=np.float64)
+
+        print(
+            f"[freefix] native refinement views={n_views} backend={cfg.freefix_backend} "
+            f"infer_steps={infer_steps} refine_steps={cfg.freefix_refine_steps}"
+        )
+
+        for local_idx in range(n_views):
+            before_rgb, _, _ = self.render_with_certainty(
+                camtoworlds=self.testset[local_idx]["camtoworld"][None, ...].float().to(self.device),
+                ks=self.testset[local_idx]["K"][None, ...].float().to(self.device),
+                width=int(self.testset[local_idx]["image"].shape[1]),
+                height=int(self.testset[local_idx]["image"].shape[0]),
+            )
+            before_u8 = (before_rgb.cpu().numpy() * 255.0).astype(np.uint8)
+            Image.fromarray(before_u8, mode="RGB").save(before_dir / f"{local_idx:03d}.jpg")
+
+        for local_idx in range(n_views):
+            data = self.testset[local_idx]
+            c2w = data["camtoworld"][None, ...].float().to(self.device)
+            k_mat = data["K"][None, ...].float().to(self.device)
+            height, width = data["image"].shape[:2]
+            rgb, alpha, certainty_masks = self.render_with_certainty(
+                camtoworlds=c2w,
+                ks=k_mat,
+                width=int(width),
+                height=int(height),
+            )
+
+            pred_u8 = (rgb.cpu().numpy() * 255.0).astype(np.uint8)
+            pred_pil = Image.fromarray(pred_u8, mode="RGB")
+            pred_pil.save(refine_render_dir / f"{local_idx:03d}.jpg")
+            rgb_to_refine = rgb.permute(2, 0, 1).detach()
+
+            mask_inputs: List[Tensor] = []
+            for mask_idx, certainty_mask in enumerate(certainty_masks):
+                mask_u8 = (certainty_mask.clamp(0.0, 1.0).cpu().numpy() * 255.0).astype(np.uint8)
+                mask_pil = Image.fromarray(mask_u8, mode="L")
+                scale_name = str(self.freefix_certainty_scales[mask_idx])
+                mask_pil.save(mask_root / scale_name / f"{local_idx:03d}.jpg")
+                mask_inputs.append(certainty_mask.detach())
+
+            if local_idx == 0:
+                warp_until = -1.0
+                warp_mask = None
+                refine_steps = cfg.freefix_refine_steps * 2
+            else:
+                warp_until = infer_steps * cfg.freefix_warp_ratio
+                warp_mask = alpha.detach()
+                refine_steps = cfg.freefix_refine_steps
+
+            refined_pil = fixer(
+                prompt=cfg.freefix_prompt,
+                negative_prompt=cfg.freefix_negative_prompt,
+                image=rgb_to_refine,
+                mask=mask_inputs,
+                mask_scheduler=mask_scheduler,
+                guide_until=guide_until,
+                warp_image=rgb_to_refine,
+                warp_until=warp_until,
+                warp_mask=warp_mask,
+                num_inference_steps=cfg.freefix_num_inference_steps,
+                strength=cfg.freefix_strength,
+                guidance_scale=cfg.freefix_guidance_scale,
+                generator=freefix_generator,
+            ).resize((int(width), int(height)), Image.LANCZOS)
+            refined_pil.save(refine_gen_dir / f"image_{local_idx:03d}.jpg")
+
+            refined_image = torch.from_numpy(np.array(refined_pil.convert("RGB")))
+            gen_id = f"gen_{local_idx}"
+            refine_cams = [
+                {
+                    "image": refined_image,
+                    "camtoworld": data["camtoworld"].float(),
+                    "K": data["K"].float(),
+                    "Gen": True,
+                    "image_id": gen_id,
+                }
+            ]
+
+            self._native_freefix_refine(
+                refine_cams,
+                train_cams,
+                train_prob,
+                max_steps=int(refine_steps),
+            )
+
+            train_cams.append(refine_cams[0])
+            train_prob = np.concatenate([train_prob, np.array([cfg.freefix_novel_prob], dtype=np.float64)])
+
+        for local_idx in range(n_views):
+            after_rgb, _, _ = self.render_with_certainty(
+                camtoworlds=self.testset[local_idx]["camtoworld"][None, ...].float().to(self.device),
+                ks=self.testset[local_idx]["K"][None, ...].float().to(self.device),
+                width=int(self.testset[local_idx]["image"].shape[1]),
+                height=int(self.testset[local_idx]["image"].shape[0]),
+            )
+            after_u8 = (after_rgb.cpu().numpy() * 255.0).astype(np.uint8)
+            Image.fromarray(after_u8, mode="RGB").save(after_dir / f"{local_idx:03d}.jpg")
+
+        ckpt_path = self.ckpt_dir / f"ckpt_freefix_{cfg.freefix_backend}_rank0.pt"
+        torch.save({"step": -1, "splats": self.splats.state_dict()}, ckpt_path)
+        with open(self.stats_dir / f"freefix_native_step{step:06d}.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "step": int(step),
+                    "backend": cfg.freefix_backend,
+                    "num_refine_views": int(n_views),
+                    "refine_steps": int(cfg.freefix_refine_steps),
+                    "checkpoint": str(ckpt_path),
+                },
+                f,
+                indent=2,
+            )
+        print(f"[freefix] saved native refined checkpoint: {ckpt_path}")
+
     def train(self, start_step: int = 0) -> None:
         cfg = self.cfg
         with open(self.result_dir / "cfg.json", "w", encoding="utf-8") as f:
@@ -1144,13 +1505,44 @@ class Trainer:
             )
 
             l1 = F.l1_loss(colors, pixels)
-            ssim_loss = 1.0 - _simple_ssim(colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2))
+            ssim_loss = self._training_ssim_loss(colors, pixels)
             loss = l1 * (1.0 - cfg.ssim_lambda) + ssim_loss * cfg.ssim_lambda
             if is_novel_data:
                 loss = loss * self._get_novel_loss_scale()
             else:
                 loss = loss * self._get_real_loss_scale()
             loss.backward()
+
+            should_save = (
+                bool(self.save_steps)
+                and (self._matches_schedule(step, self.save_steps) or step == cfg.max_steps - 1)
+            ) or (
+                not self.save_steps
+                and ((step + 1) % cfg.save_every == 0 or step + 1 == cfg.max_steps)
+            )
+            if should_save and self.training_recipe == "difix3d":
+                ckpt = self.save_checkpoint(step)
+                mem = torch.cuda.max_memory_allocated() / 1024**3 if self.device != "cpu" else 0.0
+                stats = {
+                    "mem": float(mem),
+                    "ellipse_time": float(time.time() - t0),
+                    "num_GS": int(len(self.splats["means"])),
+                }
+                print("Step: ", step, stats)
+                stats_path = self.stats_dir / f"train_step{step:04d}_rank0.json"
+                with open(stats_path, "w", encoding="utf-8") as f:
+                    json.dump(stats, f, indent=2)
+
+            post_before_optimizer = self.training_recipe in {"vanilla", "freefix"}
+            if post_before_optimizer:
+                self.strategy.step_post_backward(
+                    params=self.splats,
+                    optimizers=self.optimizers,
+                    state=self.strategy_state,
+                    step=step,
+                    info=info,
+                    packed=cfg.packed,
+                )
 
             if cfg.sparse_grad:
                 gaussian_ids = info["gaussian_ids"]
@@ -1170,35 +1562,17 @@ class Trainer:
                 optimizer.zero_grad(set_to_none=True)
             lr_sched.step()
 
-            # Keep strategy update order consistent with gsplat training flow:
-            # run post-backward after optimizer/scheduler steps.
-            self.strategy.step_post_backward(
-                params=self.splats,
-                optimizers=self.optimizers,
-                state=self.strategy_state,
-                step=step,
-                info=info,
-                packed=cfg.packed,
-            )
-
-            if (step + 1) % 50 == 0 or step == 0:
-                psnr = _compute_psnr(colors, pixels).item()
-                elapsed = time.time() - t0
-                print(
-                    f"[step {step+1:06d}/{cfg.max_steps}] "
-                    f"loss={loss.item():.4f} l1={l1.item():.4f} ssim={ssim_loss.item():.4f} "
-                    f"psnr={psnr:.2f} n_gs={len(self.splats['means'])} "
-                    f"novel={int(is_novel_data)} t={elapsed:.1f}s"
+            if not post_before_optimizer:
+                self.strategy.step_post_backward(
+                    params=self.splats,
+                    optimizers=self.optimizers,
+                    state=self.strategy_state,
+                    step=step,
+                    info=info,
+                    packed=cfg.packed,
                 )
 
-            should_save = (
-                bool(self.save_steps)
-                and (self._matches_schedule(step, self.save_steps) or step == cfg.max_steps - 1)
-            ) or (
-                not self.save_steps
-                and ((step + 1) % cfg.save_every == 0 or step + 1 == cfg.max_steps)
-            )
-            if should_save:
+            if should_save and self.training_recipe in {"vanilla", "freefix"}:
                 ckpt = self.save_checkpoint(step)
                 with open(self.stats_dir / f"train_step{step:06d}.json", "w", encoding="utf-8") as f:
                     json.dump(
@@ -1213,18 +1587,34 @@ class Trainer:
                         indent=2,
                     )
 
-            should_eval = (
-                bool(self.eval_steps)
-                and (self._matches_schedule(step, self.eval_steps) or step == cfg.max_steps - 1)
-            ) or (
-                not self.eval_steps
-                and ((step + 1) % cfg.eval_every == 0 or step + 1 == cfg.max_steps)
-            )
+            if (step + 1) % 50 == 0 or step == 0:
+                psnr = _compute_psnr(colors, pixels).item()
+                elapsed = time.time() - t0
+                print(
+                    f"[step {step+1:06d}/{cfg.max_steps}] "
+                    f"loss={loss.item():.4f} l1={l1.item():.4f} ssim={ssim_loss.item():.4f} "
+                    f"psnr={psnr:.2f} n_gs={len(self.splats['means'])} "
+                    f"novel={int(is_novel_data)} t={elapsed:.1f}s"
+                )
+
+            if self.training_recipe == "freefix" and not self.eval_steps:
+                should_eval = False
+            else:
+                should_eval = (
+                    bool(self.eval_steps)
+                    and (self._matches_schedule(step, self.eval_steps) or step == cfg.max_steps - 1)
+                ) or (
+                    not self.eval_steps
+                    and ((step + 1) % cfg.eval_every == 0 or step + 1 == cfg.max_steps)
+                )
             if should_eval:
                 self.eval(step)
 
-            if self._should_run_fix(step):
+            if self.training_recipe != "freefix" and self._should_run_fix(step):
                 self.run_fixer_update(step)
+
+        if self.training_recipe == "freefix":
+            self.run_native_freefix_refinement(step=cfg.max_steps - 1)
 
     @torch.no_grad()
     def eval(self, step: int) -> Dict[str, float]:
@@ -1381,8 +1771,7 @@ class Trainer:
 def parse_args() -> Config:
     p = argparse.ArgumentParser(
         description=(
-            "Standalone 3DGS Trainer with vanilla and Difix3D+ modes. "
-            "Use scripts/trainers/freefix_official_runner.py for exact FreeFix."
+            "Standalone 3DGS Trainer with vanilla, native FreeFix-style, and Difix3D+ modes."
         )
     )
     p.add_argument("--config", type=str, default=None, help="Optional JSON config file.")
@@ -1401,7 +1790,7 @@ def parse_args() -> Config:
     p.add_argument("--save_every", type=int, default=10000)
     p.add_argument("--eval_steps", type=str, default=None, help="Comma-separated eval steps.")
     p.add_argument("--save_steps", type=str, default=None, help="Comma-separated checkpoint steps.")
-    p.add_argument("--train_split_all", action="store_true")
+    p.add_argument("--train_split_all", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--sh_degree", type=int, default=3)
     p.add_argument("--sh_degree_interval", type=int, default=1000)
     p.add_argument("--ssim_lambda", type=float, default=0.2)
@@ -1427,7 +1816,7 @@ def parse_args() -> Config:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--mode", type=str, default="train", choices=["train", "eval", "render", "train_eval"])
-    p.add_argument("--ckpt", type=str, default=None)
+    p.add_argument("--ckpt", type=str, nargs="+", default=None)
     p.add_argument("--render_frames", type=int, default=120)
     p.add_argument("--render_fps", type=int, default=24)
     p.add_argument("--render_traj_path", type=str, default="interp", choices=["interp", "ellipse", "spiral"])
@@ -1436,12 +1825,12 @@ def parse_args() -> Config:
         type=str,
         default="vanilla",
         choices=["vanilla", "freefix", "difix3d"],
-        help="Training recipe. The freefix choice fails fast here; exact FreeFix uses freefix_official_runner.py.",
+        help="Training recipe. Native freefix trains the base GS, then runs FreeFix-style view refinement.",
     )
     p.add_argument(
         "--use_freefix",
         action="store_true",
-        help="Deprecated alias that fails fast; exact FreeFix uses freefix_official_runner.py.",
+        help="Alias for --training_recipe freefix.",
     )
     p.add_argument("--fix_steps", type=str, default=None, help="Comma-separated fix steps, e.g. 3000,6000,9000")
     p.add_argument("--fix_cache_dir", type=str, default=None, help="Shared cache dir for all fixer backends")
@@ -1459,6 +1848,11 @@ def parse_args() -> Config:
     p.add_argument("--difix_guidance_scale", type=float, default=0.0)
     p.add_argument("--difix_novel_prob", type=float, default=0.3)
     p.add_argument("--difix_novel_lambda", type=float, default=0.3)
+    p.add_argument(
+        "--difix_allow_from_scratch",
+        action="store_true",
+        help="Compatibility flag; official Difix3D behavior already allows training without --ckpt.",
+    )
     p.add_argument(
         "--difix_progressive_updates",
         action=argparse.BooleanOptionalAction,
@@ -1491,13 +1885,15 @@ def parse_args() -> Config:
     p.add_argument("--freefix_fix_every", type=int, default=400)
     p.add_argument("--freefix_num_views", type=int, default=0)
     p.add_argument("--freefix_num_inference_steps", type=int, default=50)
-    p.add_argument("--freefix_strength", type=float, default=0.6)
+    p.add_argument("--freefix_strength", type=float, default=0.5)
     p.add_argument("--freefix_guidance_scale", type=float, default=3.5)
     p.add_argument("--freefix_novel_prob", type=float, default=0.1)
     p.add_argument("--freefix_novel_lambda", type=float, default=0.2)
     p.add_argument("--freefix_real_lambda", type=float, default=1.0)
+    p.add_argument("--freefix_refine_steps", type=int, default=300)
+    p.add_argument("--freefix_use_affine", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--freefix_certainty_scales", type=str, default="0.001,0.01,0.1")
-    p.add_argument("--freefix_hessian_attrs", type=str, default="means,quats,scales")
+    p.add_argument("--freefix_hessian_attrs", type=str, default="means")
     p.add_argument("--freefix_mask_center", type=float, default=0.5)
     p.add_argument("--freefix_mask_softness", type=float, default=10.0)
     p.add_argument("--freefix_mask_scheduler", type=str, default="0.3,0.9,1.0")
@@ -1506,6 +1902,7 @@ def parse_args() -> Config:
     cli_args = sys.argv[1:]
     normalize_world_explicit = any(arg in {"--normalize_world", "--no-normalize_world"} for arg in cli_args)
     test_every_explicit = any(arg == "--test_every" or arg.startswith("--test_every=") for arg in cli_args)
+    lazy_fixer_init_explicit = any(arg in {"--lazy_fixer_init", "--no-lazy_fixer_init"} for arg in cli_args)
 
     args_pre, _ = p.parse_known_args()
     if args_pre.config is not None:
@@ -1519,6 +1916,7 @@ def parse_args() -> Config:
             raise ValueError(f"Unknown config keys: {', '.join(unknown_fields)}")
         normalize_world_explicit = normalize_world_explicit or "normalize_world" in cfg_data
         test_every_explicit = test_every_explicit or "test_every" in cfg_data
+        lazy_fixer_init_explicit = lazy_fixer_init_explicit or "lazy_fixer_init" in cfg_data
         p.set_defaults(**cfg_data)
 
     args = p.parse_args()
@@ -1528,6 +1926,7 @@ def parse_args() -> Config:
     cfg = Config(**args_dict)
     setattr(cfg, "_normalize_world_explicit", normalize_world_explicit)
     setattr(cfg, "_test_every_explicit", test_every_explicit)
+    setattr(cfg, "_lazy_fixer_init_explicit", lazy_fixer_init_explicit)
     missing: List[str] = []
     if cfg.data_dir is None or len(str(cfg.data_dir).strip()) == 0:
         missing.append("data_dir")

@@ -92,6 +92,8 @@ def to_mask_stack(
         if arr.max() > 1.0:
             arr = arr / 255.0
         arr = np.clip(arr, 0.0, 1.0)
+        if arr.shape == (size[1], size[0]):
+            return arr.astype(np.float32)
         resized = Image.fromarray((arr * 255.0).astype(np.uint8), mode="L").resize(size, Image.LANCZOS)
         return np.array(resized, dtype=np.float32) / 255.0
 

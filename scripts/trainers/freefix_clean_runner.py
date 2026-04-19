@@ -64,12 +64,13 @@ class Config:
 
     prompt: str = DEFAULT_PROMPT
     negative_prompt: str = DEFAULT_NEGATIVE_PROMPT
+    refine_num_views: int = 0
     strength: Optional[float] = None
     hessian_attrs: Optional[str] = None  # CSV, e.g. means,quats,scales
     num_inference_steps: int = 50
     guide_ratio: float = 1.0
     warp_ratio: float = 0.5
-    refine_steps: int = 400
+    refine_steps: int = 300
     gen_prob: float = 0.1
     gen_loss_weight: float = 0.2
     load_step: int = 29999
@@ -113,12 +114,13 @@ def parse_args() -> Config:
     )
     parser.add_argument("--prompt", type=str, default=DEFAULT_PROMPT)
     parser.add_argument("--negative_prompt", type=str, default=DEFAULT_NEGATIVE_PROMPT)
+    parser.add_argument("--refine_num_views", type=int, default=0)
     parser.add_argument("--strength", type=float, default=None)
     parser.add_argument("--hessian_attrs", type=str, default=None)
     parser.add_argument("--num_inference_steps", type=int, default=50)
     parser.add_argument("--guide_ratio", type=float, default=1.0)
     parser.add_argument("--warp_ratio", type=float, default=0.5)
-    parser.add_argument("--refine_steps", type=int, default=400)
+    parser.add_argument("--refine_steps", type=int, default=300)
     parser.add_argument("--gen_prob", type=float, default=0.1)
     parser.add_argument("--gen_loss_weight", type=float, default=0.2)
     parser.add_argument("--load_step", type=int, default=29999)
@@ -178,6 +180,7 @@ def run(cfg: Config) -> None:
         test_every=cfg.test_every,
         prompt=cfg.prompt,
         negative_prompt=cfg.negative_prompt,
+        refine_num_views=int(cfg.refine_num_views),
         strength=cfg.strength,
         hessian_attr=parse_hessian_attrs(cfg.hessian_attrs),
         num_inference_steps=cfg.num_inference_steps,

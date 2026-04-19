@@ -90,6 +90,32 @@ def _resolve_from_freefix_root(path_value: Optional[str], freefix_root: str) -> 
     return str((Path(freefix_root) / path).resolve())
 
 
+def _partition_for_official_recon(
+    partition_value: Optional[str],
+    data_dir: str,
+) -> Optional[str]:
+    if partition_value is None:
+        return None
+    text = str(partition_value).strip()
+    if len(text) == 0:
+        return None
+
+    path = Path(text)
+    if not path.is_absolute():
+        # The official FreeFix trainer interprets --partition relative to
+        # data_dir, not relative to freefix_root.
+        return text
+
+    resolved = path.resolve()
+    data_root = Path(data_dir).resolve()
+    try:
+        return resolved.relative_to(data_root).as_posix()
+    except ValueError:
+        # The vendored trainer accepts absolute paths after the small guard in
+        # scripts/freefix_impl/recon/trainer.py.
+        return str(resolved)
+
+
 def _set_runtime_env(cfg: Config) -> None:
     if cfg.cuda_device is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.cuda_device)
@@ -122,7 +148,7 @@ def run_recon(cfg: Config) -> None:
     save_steps = _parse_int_csv(cfg.save_steps, default=[7000, cfg.max_steps])
     data_dir = _resolve_from_freefix_root(cfg.data_dir, cfg.freefix_root)
     result_dir = _resolve_from_freefix_root(cfg.result_dir, cfg.freefix_root)
-    partition = _resolve_from_freefix_root(cfg.partition, cfg.freefix_root)
+    partition = _partition_for_official_recon(cfg.partition, str(data_dir))
     if cfg.dry_run:
         print("[dry-run] recon config:")
         print(

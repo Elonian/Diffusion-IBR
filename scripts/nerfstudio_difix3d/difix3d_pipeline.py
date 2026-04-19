@@ -81,7 +81,7 @@ class Difix3DPipeline(VanillaPipeline):
                 cache_dir=HF_HUB_CACHE,
             )
             difix.set_progress_bar_config(disable=True)
-            difix.to("cuda")
+            difix.to(self.device)
             self.difix = difix
             return difix
         except Exception as exc:
@@ -99,9 +99,9 @@ class Difix3DPipeline(VanillaPipeline):
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
 
-        if step > 0 and step % self.config.steps_per_fix == 0:
+        if self.config.steps_per_fix > 0 and step > 0 and step % self.config.steps_per_fix == 0:
             self.fix(step)
-        if step > 0 and step % self.config.steps_per_val == 0:
+        if self.config.steps_per_val > 0 and step > 0 and step % self.config.steps_per_val == 0:
             self.val(step)
 
         return model_outputs, loss_dict, metrics_dict
@@ -111,22 +111,36 @@ class Difix3DPipeline(VanillaPipeline):
 
     @torch.no_grad()
     def render_traj(self, step: int, cameras, tag: str = "novel") -> None:
-        for i in tqdm.trange(0, len(cameras), desc="Rendering trajectory"):
-            outputs = self.model.get_outputs_for_camera(cameras[i])
-            rgb_path = self.render_dir / tag / str(step) / "Pred" / f"{i:04d}.png"
-            rgb_path.parent.mkdir(parents=True, exist_ok=True)
-            rgb_canvas = outputs["rgb"].cpu().numpy()
-            Image.fromarray((rgb_canvas * 255.0).astype(np.uint8)).save(rgb_path)
+        was_training = self.training
+        self.eval()
+        try:
+            for i in tqdm.trange(0, len(cameras), desc="Rendering trajectory"):
+                outputs = self.model.get_outputs_for_camera(cameras[i])
+                rgb_path = self.render_dir / tag / str(step) / "Pred" / f"{i:04d}.png"
+                rgb_path.parent.mkdir(parents=True, exist_ok=True)
+                rgb_canvas = outputs["rgb"].detach().cpu().numpy()
+                rgb_canvas = np.clip(rgb_canvas, 0.0, 1.0)
+                Image.fromarray((rgb_canvas * 255.0).astype(np.uint8)).save(rgb_path)
+        finally:
+            if was_training:
+                self.train()
 
     @torch.no_grad()
     def val(self, step: int) -> None:
-        cameras = self.datamanager.dataparser.get_dataparser_outputs(split=self.datamanager.test_split).cameras
-        for i in tqdm.trange(0, len(cameras), desc="Running evaluation"):
-            outputs = self.model.get_outputs_for_camera(cameras[i])
-            rgb_path = self.render_dir / "val" / str(step) / f"{i:04d}.png"
-            rgb_path.parent.mkdir(parents=True, exist_ok=True)
-            rgb_canvas = outputs["rgb"].cpu().numpy()
-            Image.fromarray((rgb_canvas * 255.0).astype(np.uint8)).save(rgb_path)
+        was_training = self.training
+        self.eval()
+        try:
+            cameras = self.datamanager.dataparser.get_dataparser_outputs(split=self.datamanager.test_split).cameras
+            for i in tqdm.trange(0, len(cameras), desc="Running evaluation"):
+                outputs = self.model.get_outputs_for_camera(cameras[i])
+                rgb_path = self.render_dir / "val" / str(step) / f"{i:04d}.png"
+                rgb_path.parent.mkdir(parents=True, exist_ok=True)
+                rgb_canvas = outputs["rgb"].detach().cpu().numpy()
+                rgb_canvas = np.clip(rgb_canvas, 0.0, 1.0)
+                Image.fromarray((rgb_canvas * 255.0).astype(np.uint8)).save(rgb_path)
+        finally:
+            if was_training:
+                self.train()
 
     @torch.no_grad()
     def fix(self, step: int) -> None:
@@ -198,8 +212,10 @@ class Difix3DPipeline(VanillaPipeline):
 
         datamanager_config = Difix3DDataManagerConfig(
             dataparser=self.config.datamanager.dataparser,
-            train_num_rays_per_batch=16384,
-            eval_num_rays_per_batch=4096,
+            train_num_rays_per_batch=self.config.datamanager.train_num_rays_per_batch,
+            eval_num_rays_per_batch=self.config.datamanager.eval_num_rays_per_batch,
+            patch_size=self.config.datamanager.patch_size,
+            cache_num_workers=self.config.datamanager.cache_num_workers,
         )
         datamanager = datamanager_config.setup(
             device=self.datamanager.device,

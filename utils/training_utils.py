@@ -36,6 +36,16 @@ def knn(points: Tensor, k: int, max_pair_elements: int = 20_000_000) -> Tensor:
         return torch.empty((0, k), dtype=points.dtype, device=points.device)
 
     k_eff = min(k, n)
+
+    def _pad_to_requested_neighbors(vals: Tensor) -> Tensor:
+        if vals.shape[1] == k:
+            return vals
+        if vals.shape[1] == 0:
+            pad = torch.zeros((n, k), dtype=vals.dtype, device=vals.device)
+            return pad
+        pad = vals[:, -1:].expand(-1, k - vals.shape[1])
+        return torch.cat([vals, pad], dim=-1)
+
     if n >= 50_000:
         try:
             from sklearn.neighbors import NearestNeighbors
@@ -45,10 +55,7 @@ def knn(points: Tensor, k: int, max_pair_elements: int = 20_000_000) -> Tensor:
             nn.fit(pts_np)
             dists, _ = nn.kneighbors(pts_np, return_distance=True)
             vals = torch.from_numpy(dists).to(points.device, dtype=points.dtype)
-            if k_eff == k:
-                return vals
-            pad = torch.full((n, k - k_eff), float("inf"), dtype=vals.dtype, device=vals.device)
-            return torch.cat([vals, pad], dim=-1)
+            return _pad_to_requested_neighbors(vals)
         except Exception:
             pass
 
@@ -65,12 +72,7 @@ def knn(points: Tensor, k: int, max_pair_elements: int = 20_000_000) -> Tensor:
             out_vals.append(vals_chunk)
         vals = torch.cat(out_vals, dim=0)
 
-    if k_eff == k:
-        return vals
-
-    # Rare case: n < k. Pad with +inf to keep shape contract.
-    pad = torch.full((n, k - k_eff), float("inf"), dtype=vals.dtype, device=vals.device)
-    return torch.cat([vals, pad], dim=-1)
+    return _pad_to_requested_neighbors(vals)
 
 
 def compute_psnr(pred: Tensor, gt: Tensor, eps: float = 1e-8) -> Tensor:

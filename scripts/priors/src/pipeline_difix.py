@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import PIL.Image
 import torch
@@ -426,29 +426,34 @@ class DifixPipeline(StableDiffusionImg2ImgPipeline):
         prompt: Union[str, List[str], None] = None,
         image=None,
         ref_image=None,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
         num_inference_steps: Optional[int] = 50,
         timesteps: Optional[List[int]] = None,
         guidance_scale: float = 7.5,
-        guidance_rescale: float = 0.0,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: int = 1,
         eta: float = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        ip_adapter_image=None,
         output_type: str = "pil",
         return_dict: bool = True,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        guidance_rescale: float = 0.0,
         clip_skip: Optional[int] = None,
+        callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
+        callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         **kwargs,
     ):
         callback = kwargs.pop("callback", None)
         callback_steps = kwargs.pop("callback_steps", None)
-        if kwargs:
-            unexpected = ", ".join(sorted(kwargs.keys()))
-            raise TypeError(f"Unexpected Difix pipeline kwargs: {unexpected}")
 
-        callback_tensor_inputs = ["latents"]
+        height = height or self.unet.config.sample_size * self.vae_scale_factor
+        width = width or self.unet.config.sample_size * self.vae_scale_factor
+
         check_signature = inspect.signature(self.check_inputs).parameters
         check_kwargs: Dict[str, Any] = {
             "prompt": prompt,
@@ -460,15 +465,15 @@ class DifixPipeline(StableDiffusionImg2ImgPipeline):
         if "strength" in check_signature:
             check_kwargs["strength"] = 1.0
         if "height" in check_signature:
-            check_kwargs["height"] = self.unet.config.sample_size * self.vae_scale_factor
+            check_kwargs["height"] = height
         if "width" in check_signature:
-            check_kwargs["width"] = self.unet.config.sample_size * self.vae_scale_factor
+            check_kwargs["width"] = width
         if "ip_adapter_image" in check_signature:
-            check_kwargs["ip_adapter_image"] = None
+            check_kwargs["ip_adapter_image"] = ip_adapter_image
         if "ip_adapter_image_embeds" in check_signature:
             check_kwargs["ip_adapter_image_embeds"] = None
         if "callback_on_step_end_tensor_inputs" in check_signature:
-            check_kwargs["callback_on_step_end_tensor_inputs"] = callback_tensor_inputs
+            check_kwargs["callback_on_step_end_tensor_inputs"] = callback_on_step_end_tensor_inputs
         self.check_inputs(**check_kwargs)
 
         self._guidance_scale = guidance_scale
@@ -566,6 +571,18 @@ class DifixPipeline(StableDiffusionImg2ImgPipeline):
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
                 self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
+
+                if callback_on_step_end is not None:
+                    local_vars = locals()
+                    callback_kwargs = {k: local_vars[k] for k in callback_on_step_end_tensor_inputs}
+                    callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
+                    callback_outputs = callback_outputs or {}
+                    latents = callback_outputs.pop("latents", latents)
+                    prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
+                    negative_prompt_embeds = callback_outputs.pop(
+                        "negative_prompt_embeds",
+                        negative_prompt_embeds,
+                    )
 
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()

@@ -198,8 +198,10 @@ class Difix3DField(Field):
 
         embedded_appearance = None
         if self.embedding_appearance is not None:
-            if self.training and not self.freeze_appearance_embedding:
+            if self.training:
                 embedded_appearance = self.embedding_appearance(camera_indices)
+                if self.freeze_appearance_embedding:
+                    embedded_appearance = embedded_appearance.detach()
             elif self.use_average_appearance_embedding:
                 embedded_appearance = torch.ones(
                     (*directions.shape[:-1], self.appearance_embedding_dim),

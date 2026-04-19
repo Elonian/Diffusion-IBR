@@ -100,7 +100,7 @@ class NerfactoRunner:
             "--downscale_factor",
             str(self.downscale_factor),
             "--eval_mode",
-            "filename",
+            "interval",
         ]
         return cmd
 
@@ -184,4 +184,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

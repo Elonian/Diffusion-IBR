@@ -89,7 +89,7 @@ def _parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--downscale_factor", type=int, default=None, help="If omitted, Nerfstudio auto-selects.")
-    parser.add_argument("--eval_mode", choices=["fraction", "filename", "interval", "all"], default="filename")
+    parser.add_argument("--eval_mode", choices=["fraction", "filename", "interval", "all"], default="interval")
     parser.add_argument("--train_split_fraction", type=float, default=0.9)
     parser.add_argument("--eval_interval", type=int, default=8)
     parser.add_argument("--orientation_method", choices=["pca", "up", "vertical", "none"], default="up")

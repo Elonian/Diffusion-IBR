@@ -72,13 +72,14 @@ class DiffusionFixer:
         warp_image: Optional[Image.Image] = None,
         warp_mask: Optional[Image.Image] = None,
         mask_scheduler: Optional[list[int]] = None,
-        guide_until: Optional[int] = None,
-        warp_until: Optional[int] = None,
+        guide_until: Optional[float] = None,
+        warp_until: Optional[float] = None,
         num_inference_steps: Optional[int] = None,
-        strength: float = 0.6,
+        strength: float = 0.5,
         guidance_scale: Optional[float] = None,
         timestep: int = 199,
         seed: Optional[int] = 64,
+        generator: Optional[torch.Generator] = None,
     ) -> Image.Image:
         # -------- 1) Dispatch to selected custom fixer backend --------
         if self.backend == "difix":
@@ -93,10 +94,12 @@ class DiffusionFixer:
                 num_inference_steps=num_inference_steps,
                 timestep=timestep,
                 guidance_scale=guidance_scale,
+                # Official Difix3D fixer calls do not pass a generator.
                 generator=None,
             )
 
-        generator = self._build_generator(64 if seed is None else seed)
+        if generator is None:
+            generator = self._build_generator(64 if seed is None else seed)
 
         # -------- 2) Run deterministic non-DIFIX fixer backend --------
         if num_inference_steps is None:
@@ -137,7 +140,7 @@ def main() -> None:
     parser.add_argument("--warp_mask", type=str, default=None, help="Optional warp mask path")
     parser.add_argument("--steps", type=int, default=None, help="Number of denoising steps")
     parser.add_argument("--timestep", type=int, default=199, help="Single-step diffusion timestep (DIFIX)")
-    parser.add_argument("--strength", type=float, default=0.6, help="Img2img strength")
+    parser.add_argument("--strength", type=float, default=0.5, help="Img2img strength")
     parser.add_argument("--guidance_scale", type=float, default=None, help="CFG scale; backend default when omitted")
     parser.add_argument("--seed", type=int, default=64, help="Random seed")
     parser.add_argument("--difix_model_id", type=str, default="nvidia/difix_ref", help="DIFIX model id")

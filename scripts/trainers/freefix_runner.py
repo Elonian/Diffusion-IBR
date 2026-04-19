@@ -58,17 +58,17 @@ class Config:
     recon_save_steps: str = "7000,30000"
 
     refine_cycles: int = 1
-    refine_steps_per_cycle: int = 400
+    refine_steps_per_cycle: int = 300
     refine_num_views: int = 0
 
     prompt: str = DEFAULT_PROMPT
     negative_prompt: str = DEFAULT_NEGATIVE_PROMPT
     freefix_num_inference_steps: int = 50
-    freefix_strength: float = 0.6
+    freefix_strength: float = 0.5
     freefix_guidance_scale: float = 3.5
     freefix_guide_ratio: float = 1.0
     freefix_warp_ratio: float = 0.5
-    freefix_hessian_attrs: str = "means,quats,scales"
+    freefix_hessian_attrs: str = "means"
 
     gen_prob: float = 0.1
     gen_loss_weight: float = 0.2
@@ -92,16 +92,16 @@ def parse_args() -> Config:
     parser.add_argument("--recon_eval_steps", type=str, default="7000,30000")
     parser.add_argument("--recon_save_steps", type=str, default="7000,30000")
     parser.add_argument("--refine_cycles", type=int, default=1)
-    parser.add_argument("--refine_steps_per_cycle", type=int, default=400)
+    parser.add_argument("--refine_steps_per_cycle", type=int, default=300)
     parser.add_argument("--refine_num_views", type=int, default=0)
     parser.add_argument("--prompt", type=str, default=DEFAULT_PROMPT)
     parser.add_argument("--negative_prompt", type=str, default=DEFAULT_NEGATIVE_PROMPT)
     parser.add_argument("--freefix_num_inference_steps", type=int, default=50)
-    parser.add_argument("--freefix_strength", type=float, default=0.6)
+    parser.add_argument("--freefix_strength", type=float, default=0.5)
     parser.add_argument("--freefix_guidance_scale", type=float, default=3.5)
     parser.add_argument("--freefix_guide_ratio", type=float, default=1.0)
     parser.add_argument("--freefix_warp_ratio", type=float, default=0.5)
-    parser.add_argument("--freefix_hessian_attrs", type=str, default="means,quats,scales")
+    parser.add_argument("--freefix_hessian_attrs", type=str, default="means")
     parser.add_argument("--gen_prob", type=float, default=0.1)
     parser.add_argument("--gen_loss_weight", type=float, default=0.2)
     parser.add_argument("--device", type=str, default="cuda")
@@ -166,6 +166,7 @@ def run(cfg: Config) -> None:
         save_steps=cfg.recon_save_steps,
         prompt=cfg.prompt,
         negative_prompt=cfg.negative_prompt,
+        refine_num_views=int(cfg.refine_num_views),
         strength=float(cfg.freefix_strength),
         hessian_attrs=cfg.freefix_hessian_attrs,
         num_inference_steps=int(cfg.freefix_num_inference_steps),
