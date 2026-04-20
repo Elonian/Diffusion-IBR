@@ -1,46 +1,21 @@
 import argparse
-import os
-import shlex
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+project_root_str = str(PROJECT_ROOT)
+if project_root_str in sys.path:
+    sys.path.remove(project_root_str)
+sys.path.insert(0, project_root_str)
 
-def _print_cmd(cmd: List[str], cwd: Optional[Path] = None) -> None:
-    printable = " ".join(shlex.quote(x) for x in cmd)
-    if cwd is None:
-        print(f"[run] {printable}")
-    else:
-        print(f"[run] (cwd={cwd}) {printable}")
-
-
-def _run_cmd(cmd: List[str], env: dict, cwd: Optional[Path], dry_run: bool) -> None:
-    _print_cmd(cmd, cwd)
-    if dry_run:
-        return
-    subprocess.run(cmd, env=env, cwd=str(cwd) if cwd else None, check=True)
-
-
-def _resolve_ns_train_prefix(train_bin: str) -> List[str]:
-    if shutil.which(train_bin):
-        return [train_bin]
-    return [sys.executable, "-m", "nerfstudio.scripts.train"]
-
-
-def _resolve_ns_render_prefix(render_bin: str) -> List[str]:
-    if shutil.which(render_bin):
-        return [render_bin]
-    return [sys.executable, "-m", "nerfstudio.scripts.render"]
-
-
-def _find_latest_config(search_root: Path) -> Optional[Path]:
-    configs = list(search_root.rglob("config.yml"))
-    if not configs:
-        return None
-    configs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return configs[0]
+from utils.nerfstudio_cli import (
+    build_cuda_env,
+    find_latest_config,
+    resolve_ns_render_prefix,
+    resolve_ns_train_prefix,
+    run_command,
+)
 
 
 class NerfactoRunner:
@@ -77,13 +52,10 @@ class NerfactoRunner:
         self.render_bin = render_bin
 
     def _env(self) -> dict:
-        env = os.environ.copy()
-        if self.gpu is not None:
-            env["CUDA_VISIBLE_DEVICES"] = self.gpu
-        return env
+        return build_cuda_env(self.gpu)
 
     def _train_cmd(self) -> List[str]:
-        prefix = _resolve_ns_train_prefix(self.train_bin)
+        prefix = resolve_ns_train_prefix(self.train_bin)
         cmd = prefix + [
             "nerfacto",
             "--data",
@@ -105,7 +77,7 @@ class NerfactoRunner:
         return cmd
 
     def _render_cmd(self, config_path: Path) -> List[str]:
-        prefix = _resolve_ns_render_prefix(self.render_bin)
+        prefix = resolve_ns_render_prefix(self.render_bin)
         cmd = prefix + [
             "interpolate",
             "--load-config",
@@ -131,18 +103,18 @@ class NerfactoRunner:
 
         # -------- 2) Run Nerfacto baseline training if requested --------
         if self.mode in {"train", "train_and_render"}:
-            _run_cmd(self._train_cmd(), env=env, cwd=None, dry_run=self.dry_run)
+            run_command(self._train_cmd(), env=env, cwd=None, dry_run=self.dry_run)
 
         # -------- 3) Resolve config path and render baseline video --------
         if self.mode in {"render", "train_and_render"}:
-            config_path = self.config or _find_latest_config(self.output_dir / self.experiment_name)
+            config_path = self.config or find_latest_config(self.output_dir / self.experiment_name)
             if config_path is None:
                 raise FileNotFoundError(
                     f"No config.yml found under {self.output_dir / self.experiment_name}. "
                     "Pass --config explicitly or run training first."
                 )
             print(f"[info] Using config: {config_path}")
-            _run_cmd(self._render_cmd(config_path), env=env, cwd=None, dry_run=self.dry_run)
+            run_command(self._render_cmd(config_path), env=env, cwd=None, dry_run=self.dry_run)
 
 
 def main() -> None:

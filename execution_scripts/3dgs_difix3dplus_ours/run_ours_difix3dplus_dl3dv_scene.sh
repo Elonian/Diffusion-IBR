@@ -3,17 +3,16 @@ set -euo pipefail
 
 # Our Difix3D+ 3DGS flow on one DL3DV scene:
 # - uses scripts/trainers/trainer.py (training_recipe=difix3d)
-# - resumes from existing 30k vanilla checkpoint by default
-# - writes to a separate output root (never official output folders)
-# - defaults to resuming from official 30k vanilla ckpt in
-#   outputs/official_difix3d/vanilla_gs (fallback to official_3dgs_full_baseline).
+# - prefers an existing checkpoint from the local output root
+# - can start from scratch when no local checkpoint exists
+# - writes to a separate output root
 
 REPO_ROOT="/mntdatalora/src/Diffusion-IBR"
 DL3DV_ROOT="${REPO_ROOT}/data/DL3DV-10K-Benchmark"
 TRAINER_PY="${REPO_ROOT}/scripts/trainers/trainer.py"
 CONFIG_JSON="${CONFIG_JSON:-${REPO_ROOT}/configs/difix3d_plus_train.json}"
 LOG_ROOT="${REPO_ROOT}/logs/execution"
-ACTIVATE_SCRIPT="${REPO_ROOT}/execution_scripts/3dgs_difix3dplus/activate_persistent_difix3d_env.sh"
+ACTIVATE_SCRIPT="${ACTIVATE_SCRIPT:-}"
 
 SCENE_ID="${1:-032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7}"
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
@@ -29,6 +28,7 @@ TEST_EVERY="${TEST_EVERY:-8}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
 INSTALL_BUILD_DEPS="${INSTALL_BUILD_DEPS:-1}"
+DRY_RUN="${DRY_RUN:-0}"
 
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/outputs/ours_difix3dplus_gs}"
 MAX_STEPS="${MAX_STEPS:-60000}"
@@ -37,7 +37,9 @@ SAVE_EVERY="${SAVE_EVERY:-10000}"
 
 STRICT_OFFICIAL_DIFIX="${STRICT_OFFICIAL_DIFIX:-1}"
 ALLOW_RUNTIME_DIFIX_OVERRIDES="${ALLOW_RUNTIME_DIFIX_OVERRIDES:-0}"
+ALLOW_REFERENCE_CKPT_FALLBACK="${ALLOW_REFERENCE_CKPT_FALLBACK:-0}"
 ALLOW_LEGACY_VANILLA_FALLBACK="${ALLOW_LEGACY_VANILLA_FALLBACK:-0}"
+START_FROM_SCRATCH="${START_FROM_SCRATCH:-1}"
 
 OFFICIAL_FIX_STEPS="${OFFICIAL_FIX_STEPS:-3000,6000,8000,10000,12000,14000,16000,18000,20000,22000,24000,26000,28000,30000,32000,34000,36000,38000,40000,42000,44000,46000,48000,50000,52000,54000,56000,58000,60000}"
 OFFICIAL_EVAL_STEPS="${OFFICIAL_EVAL_STEPS:-10000,20000,30000,35000,40000,45000,50000,55000,60000}"
@@ -51,9 +53,9 @@ GS_DATA_DIR="${SCENE_DIR}/gaussian_splat"
 OURS_OUT="${OUTPUT_ROOT}/${SCENE_ID}"
 OURS_CKPT_DIR="${OURS_OUT}/ckpts"
 
-VANILLA_OFFICIAL="${REPO_ROOT}/outputs/official_difix3d/vanilla_gs/${SCENE_ID}/ckpts/ckpt_29999_rank0.pt"
-VANILLA_LEGACY="${REPO_ROOT}/outputs/official_3dgs_full_baseline/${SCENE_ID}/ckpts/ckpt_29999_rank0.pt"
-OFFICIAL_DIFIX_CKPT_DIR="${REPO_ROOT}/outputs/official_difix3d/difix3d_gs/${SCENE_ID}/ckpts"
+REFERENCE_VANILLA_CKPT="${REPO_ROOT}/outputs/official_difix3d/vanilla_gs/${SCENE_ID}/ckpts/ckpt_29999_rank0.pt"
+REFERENCE_LEGACY_VANILLA_CKPT="${REPO_ROOT}/outputs/official_3dgs_full_baseline/${SCENE_ID}/ckpts/ckpt_29999_rank0.pt"
+REFERENCE_DIFIX_CKPT_DIR="${REPO_ROOT}/outputs/official_difix3d/difix3d_gs/${SCENE_ID}/ckpts"
 
 find_latest_ckpt() {
   local ckpt_dir="$1"
@@ -181,71 +183,88 @@ install_build_deps() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y gcc g++ build-essential ninja-build cmake
 }
 
-if [[ "${INSTALL_DEPS}" == "1" ]]; then
+if [[ "${DRY_RUN}" == "1" ]]; then
+  echo "[setup] Dry run: skipping dependency installation."
+elif [[ "${INSTALL_DEPS}" == "1" ]]; then
   install_runtime_deps
 else
   echo "[setup] Skipping dependency installation (INSTALL_DEPS=${INSTALL_DEPS})."
 fi
 
-if [[ "${INSTALL_BUILD_DEPS}" == "1" ]]; then
+if [[ "${DRY_RUN}" == "1" ]]; then
+  echo "[setup] Dry run: skipping build toolchain setup."
+elif [[ "${INSTALL_BUILD_DEPS}" == "1" ]]; then
   install_build_deps
 else
   echo "[setup] Skipping build toolchain setup (INSTALL_BUILD_DEPS=${INSTALL_BUILD_DEPS})."
 fi
 
-if ! command -v gcc >/dev/null 2>&1 || ! command -v g++ >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1 || ! command -v cmake >/dev/null 2>&1; then
-  echo "[setup] Missing required build tools (gcc/g++/ninja/cmake)." >&2
-  echo "[setup] Rerun with INSTALL_BUILD_DEPS=1 or prepare the persistent official environment first." >&2
-  exit 1
+if [[ "${DRY_RUN}" != "1" ]]; then
+  if ! command -v gcc >/dev/null 2>&1 || ! command -v g++ >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1 || ! command -v cmake >/dev/null 2>&1; then
+    echo "[setup] Missing required build tools (gcc/g++/ninja/cmake)." >&2
+    echo "[setup] Rerun with INSTALL_BUILD_DEPS=1 or prepare the persistent environment first." >&2
+    exit 1
+  fi
 fi
 
 RESUME_CKPT=""
 if [[ -n "${START_CKPT}" ]]; then
   RESUME_CKPT="${START_CKPT}"
 elif [[ "${FORCE_FROM_30000}" == "1" ]]; then
-  if [[ -f "${VANILLA_OFFICIAL}" ]]; then
-    RESUME_CKPT="${VANILLA_OFFICIAL}"
-  elif [[ "${ALLOW_LEGACY_VANILLA_FALLBACK}" == "1" && -f "${VANILLA_LEGACY}" ]]; then
-    RESUME_CKPT="${VANILLA_LEGACY}"
-    echo "[warn] Official vanilla ckpt not found; falling back to legacy 3dgs_full_baseline ckpt at 30k."
+  if [[ "${ALLOW_REFERENCE_CKPT_FALLBACK}" == "1" && -f "${REFERENCE_VANILLA_CKPT}" ]]; then
+    RESUME_CKPT="${REFERENCE_VANILLA_CKPT}"
+  elif [[ "${ALLOW_REFERENCE_CKPT_FALLBACK}" == "1" && "${ALLOW_LEGACY_VANILLA_FALLBACK}" == "1" && -f "${REFERENCE_LEGACY_VANILLA_CKPT}" ]]; then
+    RESUME_CKPT="${REFERENCE_LEGACY_VANILLA_CKPT}"
+    echo "[warn] Reference vanilla ckpt not found; falling back to legacy 3dgs_full_baseline ckpt at 30k."
   else
-    echo "Missing 30k vanilla checkpoint. Checked:" >&2
-    echo "  - ${VANILLA_OFFICIAL}" >&2
-    echo "  - ${VANILLA_LEGACY}" >&2
+    echo "Missing 30k vanilla checkpoint. Set START_CKPT, or set ALLOW_REFERENCE_CKPT_FALLBACK=1 to use stored comparison checkpoints." >&2
+    echo "Checked:" >&2
+    echo "  - ${REFERENCE_VANILLA_CKPT}" >&2
+    echo "  - ${REFERENCE_LEGACY_VANILLA_CKPT}" >&2
     exit 1
   fi
 else
   LATEST_OURS="$(find_latest_ckpt "${OURS_CKPT_DIR}")"
   if [[ -n "${LATEST_OURS}" ]]; then
     RESUME_CKPT="${LATEST_OURS}"
-  elif [[ -f "${VANILLA_OFFICIAL}" ]]; then
-    RESUME_CKPT="${VANILLA_OFFICIAL}"
-  elif [[ "${ALLOW_LEGACY_VANILLA_FALLBACK}" == "1" && -f "${VANILLA_LEGACY}" ]]; then
-    RESUME_CKPT="${VANILLA_LEGACY}"
-    echo "[warn] Official vanilla ckpt not found; falling back to legacy 3dgs_full_baseline ckpt at 30k."
+  elif [[ "${ALLOW_REFERENCE_CKPT_FALLBACK}" == "1" && -f "${REFERENCE_VANILLA_CKPT}" ]]; then
+    RESUME_CKPT="${REFERENCE_VANILLA_CKPT}"
+  elif [[ "${ALLOW_REFERENCE_CKPT_FALLBACK}" == "1" && "${ALLOW_LEGACY_VANILLA_FALLBACK}" == "1" && -f "${REFERENCE_LEGACY_VANILLA_CKPT}" ]]; then
+    RESUME_CKPT="${REFERENCE_LEGACY_VANILLA_CKPT}"
+    echo "[warn] Reference vanilla ckpt not found; falling back to legacy 3dgs_full_baseline ckpt at 30k."
   else
-    LATEST_OFFICIAL_DIFIX="$(find_latest_ckpt "${OFFICIAL_DIFIX_CKPT_DIR}")"
-    if [[ -n "${LATEST_OFFICIAL_DIFIX}" ]]; then
-      RESUME_CKPT="${LATEST_OFFICIAL_DIFIX}"
+    LATEST_REFERENCE_DIFIX=""
+    if [[ "${ALLOW_REFERENCE_CKPT_FALLBACK}" == "1" ]]; then
+      LATEST_REFERENCE_DIFIX="$(find_latest_ckpt "${REFERENCE_DIFIX_CKPT_DIR}")"
+    fi
+    if [[ -n "${LATEST_REFERENCE_DIFIX}" ]]; then
+      RESUME_CKPT="${LATEST_REFERENCE_DIFIX}"
+    elif [[ "${START_FROM_SCRATCH}" == "1" ]]; then
+      echo "[info] No local checkpoint found; starting from scratch."
     else
       echo "No checkpoint found to resume from." >&2
+      echo "Set START_CKPT, START_FROM_SCRATCH=1, or ALLOW_REFERENCE_CKPT_FALLBACK=1." >&2
       exit 1
     fi
   fi
 fi
 
-if [[ ! -f "${RESUME_CKPT}" ]]; then
+if [[ -n "${RESUME_CKPT}" && ! -f "${RESUME_CKPT}" ]]; then
   echo "Resume checkpoint not found: ${RESUME_CKPT}" >&2
   exit 1
 fi
 
-RESUME_STEP="$("${PYTHON_BIN}" - "${RESUME_CKPT}" <<'PY'
+if [[ -n "${RESUME_CKPT}" ]]; then
+  RESUME_STEP="$("${PYTHON_BIN}" - "${RESUME_CKPT}" <<'PY'
 import sys
 import torch
 ckpt = torch.load(sys.argv[1], map_location="cpu")
 print(int(ckpt.get("step", -1)))
 PY
 )"
+else
+  RESUME_STEP="-1"
+fi
 
 if [[ "${MAX_STEPS}" -le "${RESUME_STEP}" ]]; then
   echo "[warn] MAX_STEPS=${MAX_STEPS} <= resume step ${RESUME_STEP}. Bumping MAX_STEPS to $((RESUME_STEP + 1))."
@@ -258,17 +277,17 @@ export DIFFUSION_IBR_CACHE_DIR="${REPO_ROOT}/cache_weights"
 echo "Scene: ${SCENE_ID}"
 echo "Data: ${GS_DATA_DIR}"
 echo "Config: ${CONFIG_JSON}"
-echo "Resume ckpt: ${RESUME_CKPT}"
+echo "Resume ckpt: ${RESUME_CKPT:-<scratch>}"
 echo "Resume step: ${RESUME_STEP}"
 echo "Output (ours): ${OURS_OUT}"
 echo "Max steps: ${MAX_STEPS}"
-echo "Strict official difix: ${STRICT_OFFICIAL_DIFIX}"
+echo "Strict reference Difix schedule: ${STRICT_OFFICIAL_DIFIX}"
 echo
 
 EXTRA_ARGS=()
 
 if [[ "${STRICT_OFFICIAL_DIFIX}" == "1" ]]; then
-  # Force official Difix3D schedule/behavior to avoid hidden env/config drift.
+  # Force reference Difix3D schedule/behavior to avoid hidden env/config drift.
   EXTRA_ARGS+=(
     --training_recipe difix3d
     --use_difix
@@ -318,17 +337,33 @@ elif [[ "${LAZY_FIXER_INIT:-}" == "1" ]]; then
   EXTRA_ARGS+=(--lazy_fixer_init)
 fi
 
-CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" "${PYTHON_BIN}" "${TRAINER_PY}" \
-  --config "${CONFIG_JSON}" \
-  --data_dir "${GS_DATA_DIR}" \
-  --result_dir "${OURS_OUT}" \
-  --data_factor "${DATA_FACTOR}" \
-  --test_every "${TEST_EVERY}" \
-  --num_workers "${NUM_WORKERS}" \
-  --mode train \
-  --device cuda \
-  --ckpt "${RESUME_CKPT}" \
-  --max_steps "${MAX_STEPS}" \
-  --eval_every "${EVAL_EVERY}" \
-  --save_every "${SAVE_EVERY}" \
+CKPT_ARGS=()
+if [[ -n "${RESUME_CKPT}" ]]; then
+  CKPT_ARGS+=(--ckpt "${RESUME_CKPT}")
+fi
+
+CMD=(
+  "${PYTHON_BIN}" "${TRAINER_PY}"
+  "${CKPT_ARGS[@]}"
+  --config "${CONFIG_JSON}"
+  --data_dir "${GS_DATA_DIR}"
+  --result_dir "${OURS_OUT}"
+  --data_factor "${DATA_FACTOR}"
+  --test_every "${TEST_EVERY}"
+  --num_workers "${NUM_WORKERS}"
+  --mode train
+  --device cuda
+  --max_steps "${MAX_STEPS}"
+  --eval_every "${EVAL_EVERY}"
+  --save_every "${SAVE_EVERY}"
   "${EXTRA_ARGS[@]}"
+)
+
+if [[ "${DRY_RUN}" == "1" ]]; then
+  printf '[dry-run]'
+  printf ' %q' CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" "${CMD[@]}"
+  printf '\n'
+  exit 0
+fi
+
+CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" "${CMD[@]}"

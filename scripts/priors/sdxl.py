@@ -14,7 +14,13 @@ if project_root_str in sys.path:
     sys.path.remove(project_root_str)
 sys.path.insert(0, project_root_str)
 
-from scripts.priors._utils import resolve_hf_cache_root, to_mask_stack, to_pil_image
+from utils.diffusion_utils import (
+    blend_images,
+    combine_mask_stack,
+    resolve_hf_cache_root,
+    to_mask_stack,
+    to_pil_image,
+)
 
 
 def _image_size(image: Union[Image.Image, torch.Tensor, np.ndarray]) -> tuple[int, int]:
@@ -29,7 +35,12 @@ def _image_size(image: Union[Image.Image, torch.Tensor, np.ndarray]) -> tuple[in
 
 class CustomSDXLFixer:
     """
-    Local FreeFix SDXL backend using the vendored official FreeFix pipeline.
+    Local FreeFix-style SDXL backend.
+
+    The diffusion pass uses the installed Diffusers SDXL img2img pipeline. The
+    project-specific mask/warp guidance is applied as a deterministic image
+    blend after denoising, so this wrapper does not import external FreeFix
+    Python trees.
     """
 
     def __init__(
@@ -43,8 +54,13 @@ class CustomSDXLFixer:
         self.cache_dir = cache_dir or resolve_hf_cache_root()
         self.model_id = model_id
 
-        from scripts.priors.src.freefix_euler_discrete_scheduler import EulerDiscreteScheduler
-        from scripts.priors.src.freefix_sdxl_pipeline import StableDiffusionXLImg2ImgPipeline
+        try:
+            from diffusers import EulerDiscreteScheduler, StableDiffusionXLImg2ImgPipeline
+        except Exception as exc:
+            raise RuntimeError(
+                "CustomSDXLFixer requires a Diffusers installation that provides "
+                "StableDiffusionXLImg2ImgPipeline and EulerDiscreteScheduler."
+            ) from exc
 
         self.pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
             self.model_id,
@@ -109,12 +125,6 @@ class CustomSDXLFixer:
             prompt,
             negative_prompt=negative_prompt,
             image=input_image,
-            mask=mask_tensor,
-            mask_scheduler=mask_scheduler,
-            warp_image=warp_image_pil,
-            warp_mask=warp_mask_tensor,
-            guide_until=0 if guide_until is None else guide_until,
-            warp_until=0 if warp_until is None else warp_until,
             height=height,
             width=width,
             guidance_scale=float(guidance_scale),
@@ -122,4 +132,25 @@ class CustomSDXLFixer:
             generator=generator,
             strength=float(strength),
         )
-        return output.images[0].resize((width, height), Image.LANCZOS)
+        edited = output.images[0].resize((width, height), Image.LANCZOS)
+
+        if mask_tensor is None and warp_mask_tensor is None:
+            return edited
+
+        if mask_tensor is None:
+            edit_weight = torch.ones((height, width), dtype=torch.float32, device=self.device)
+        else:
+            infer_steps = max(1, int(num_inference_steps * strength))
+            edit_weight = combine_mask_stack(
+                mask_tensor,
+                mask_scheduler=mask_scheduler,
+                infer_steps=infer_steps,
+            )
+        if warp_mask_tensor is not None and warp_until is not None and float(warp_until) > 0:
+            edit_weight = edit_weight * (
+                1.0 - warp_mask_tensor.to(edit_weight.device).float().clamp(0.0, 1.0)
+            )
+
+        weight_u8 = (edit_weight.detach().cpu().clamp(0.0, 1.0).numpy() * 255.0).astype(np.uint8)
+        blend_base = warp_image_pil if isinstance(warp_image_pil, Image.Image) else input_image
+        return blend_images(blend_base, edited, Image.fromarray(weight_u8, mode="L"))

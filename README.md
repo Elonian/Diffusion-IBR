@@ -22,7 +22,7 @@ This README focuses on the Diffusion-IBR project-owned orchestration and trainin
 - `data/DL3DV-10K-Benchmark/download.py`
 
 
-Third-party vendored/cached Python code (especially huge trees in `cache_weights/` ) is treated as dependency/runtime payload, not the primary maintained surface.
+Third-party cached payloads (especially huge trees in `cache_weights/`) are treated as dependency/runtime data, not the primary maintained surface.
 
 ## Repository Layout
 
@@ -32,13 +32,15 @@ Third-party vendored/cached Python code (especially huge trees in `cache_weights
 - `scripts/priors/fixer.py`: unified diffusion fixer entrypoint (`difix`, `sdxl`, `flux`).
 - `scripts/priors/difix.py`: DifixPipeline wrapper.
 - `scripts/priors/sdxl.py`, `scripts/priors/flux.py`: SDXL/FLUX img2img wrappers with mask+warp blending.
-- `scripts/rendering/3dgs_render.py`: standalone splatfacto train/render helper.
-- `scripts/rendering/nerfactor_render.py`: nerfacto train/render helper.
-- `utils/data_colmap.py`, `utils/data_dataset.py`: COLMAP parsing, splits, dataset batches.
+- `scripts/rendering/gaussian_splatting_render.py`: standalone splatfacto train/render helper.
+- `scripts/rendering/nerfacto_render.py`: nerfacto train/render helper.
+- `utils/colmap_data.py`, `utils/colmap_dataset.py`: COLMAP parsing, splits, dataset batches.
+- `utils/camera_normalization.py`: COLMAP/camera normalization helpers.
+- `utils/nerfstudio_cli.py`: shared Nerfstudio CLI command helpers.
 - `utils/freefix_support.py`: partition + YAML asset generation for FreeFix workflows.
 - `evaluation/evaluate_metrics.py`: PSNR/SSIM/LPIPS image-folder evaluator.
 - `configs/*.json`: preset configs for Difix3D/Difix3D+/FreeFix runners.
-- `execution_scripts/*`: shell wrappers for common official/ours experiments.
+- `execution_scripts/*`: shell wrappers for common local experiments.
 
 ## Environment Setup
 
@@ -50,7 +52,7 @@ python -m pip install -r requirements.txt
 Notes:
 
 - `requirements.txt` installs the self-contained stack (PyTorch, gsplat, diffusers ecosystem, pycolmap).
-- Nerfstudio and some official stacks are optional and may require separate setup.
+- Nerfstudio and some external stacks are optional and may require separate setup.
 - Caches default to `cache_weights/` (HF cache variables are set by helper code if not provided).
 
 ## Data Setup (DL3DV)
@@ -150,7 +152,7 @@ python scripts/trainers/nerfacto_vanilla_trainer.py \
 
 Unified wrapper: `scripts/priors/fixer.py`
 
-- `difix`: `CustomDifixFixer` via `works/Difix3D/src/pipeline_difix.py`
+- `difix`: `CustomDifixFixer` via the local loader in `scripts/priors/src/pipeline_difix.py`
 - `sdxl`: `CustomSDXLFixer`
 - `flux`: `CustomFluxFixer`
 
@@ -173,7 +175,7 @@ python scripts/priors/fixer.py \
 ### Splatfacto baseline helper
 
 ```bash
-python scripts/rendering/3dgs_render.py \
+python scripts/rendering/gaussian_splatting_render.py \
   --mode train_and_render \
   --data_dir /path/to/nerfstudio_data \
   --output_dir /path/to/output \
@@ -183,7 +185,7 @@ python scripts/rendering/3dgs_render.py \
 ### Nerfacto helper
 
 ```bash
-python scripts/rendering/nerfactor_render.py \
+python scripts/rendering/nerfacto_render.py \
   --mode train_and_render \
   --data_dir /path/to/nerfstudio_data \
   --output_dir /path/to/output \

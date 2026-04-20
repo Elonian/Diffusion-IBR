@@ -1,5 +1,5 @@
 """
-Render trajectory helpers aligned with the official Difix3D gsplat code.
+Render trajectory helpers for local Difix3D-style and gsplat workflows.
 """
 
 from __future__ import annotations

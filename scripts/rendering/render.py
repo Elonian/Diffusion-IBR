@@ -4,13 +4,13 @@ Render videos from gsplat/3DGS checkpoints.
 
 Examples:
   python scripts/rendering/render.py \
-    --ckpt outputs/official_3dgs_full_baseline/<scene>/ckpts/ckpt_59999_rank0.pt \
+    --ckpt outputs/gaussian_splatting_baseline/<scene>/ckpts/ckpt_59999_rank0.pt \
     --data_dir data/DL3DV-10K-Benchmark/<scene>/gaussian_splat \
     --trajectory_mode circle \
     --output outputs/renders/<scene>_circle.mp4
 
   python scripts/rendering/render.py \
-    --ckpt outputs/official_3dgs_full_baseline/<scene>/ckpts/ckpt_59999_rank0.pt \
+    --ckpt outputs/gaussian_splatting_baseline/<scene>/ckpts/ckpt_59999_rank0.pt \
     --data_dir data/DL3DV-10K-Benchmark/<scene>/gaussian_splat \
     --trajectory cameras.npy \
     --output outputs/renders/<scene>_custom.mp4
@@ -60,7 +60,7 @@ def _load_runtime_modules() -> None:
     import imageio.v2 as imageio_mod
     import torch as torch_mod
     from gsplat.rendering import rasterization as rasterization_mod
-    from utils.data_colmap import ColmapParser as ColmapParserMod
+    from utils.colmap_data import ColmapParser as ColmapParserMod
     from utils.traj_utils import (
         focus_point_fn as focus_point_fn_mod,
         generate_ellipse_path_z as generate_ellipse_path_z_mod,
@@ -406,7 +406,7 @@ def infer_scene_id_from_ckpt(ckpt_path: Path) -> Optional[str]:
     if ckpt_path.parent.name == "ckpts" and ckpt_path.parent.parent.name:
         return ckpt_path.parent.parent.name
     parts = list(ckpt_path.parts)
-    for marker in ("official_3dgs_full_baseline", "official_difix3d", "ours_difix3dplus"):
+    for marker in ("gaussian_splatting_baseline", "difix3d", "ours_difix3dplus", "freefix_self"):
         if marker in parts:
             idx = parts.index(marker)
             if idx + 1 < len(parts):

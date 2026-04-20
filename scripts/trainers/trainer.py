@@ -57,7 +57,7 @@ from scripts._local_utils import (
 if TYPE_CHECKING:
     from scripts.priors.fixer import DiffusionFixer
 
-OFFICIAL_VANILLA_LRS: Dict[str, float] = {
+GSPLAT_BASELINE_LRS: Dict[str, float] = {
     "means_lr": 1.6e-4,
     "scales_lr": 5e-3,
     "quats_lr": 1e-3,
@@ -67,16 +67,16 @@ OFFICIAL_VANILLA_LRS: Dict[str, float] = {
 }
 
 LEGACY_REDUCED_LRS: Dict[str, float] = {
-    "means_lr": OFFICIAL_VANILLA_LRS["means_lr"] / 10,
-    "scales_lr": OFFICIAL_VANILLA_LRS["scales_lr"] / 5,
-    "quats_lr": OFFICIAL_VANILLA_LRS["quats_lr"] / 5,
-    "opacities_lr": OFFICIAL_VANILLA_LRS["opacities_lr"] / 5,
-    "sh0_lr": OFFICIAL_VANILLA_LRS["sh0_lr"] / 50,
-    "shN_lr": OFFICIAL_VANILLA_LRS["shN_lr"] / 50,
+    "means_lr": GSPLAT_BASELINE_LRS["means_lr"] / 10,
+    "scales_lr": GSPLAT_BASELINE_LRS["scales_lr"] / 5,
+    "quats_lr": GSPLAT_BASELINE_LRS["quats_lr"] / 5,
+    "opacities_lr": GSPLAT_BASELINE_LRS["opacities_lr"] / 5,
+    "sh0_lr": GSPLAT_BASELINE_LRS["sh0_lr"] / 50,
+    "shN_lr": GSPLAT_BASELINE_LRS["shN_lr"] / 50,
 }
 
-OFFICIAL_DIFIX3D_FIX_STEPS: Tuple[int, ...] = (3000, 6000, *range(8000, 60001, 2000))
-OFFICIAL_DIFIX3D_EVAL_STEPS: Tuple[int, ...] = (
+DIFIX3D_DEFAULT_FIX_STEPS: Tuple[int, ...] = (3000, 6000, *range(8000, 60001, 2000))
+DIFIX3D_DEFAULT_EVAL_STEPS: Tuple[int, ...] = (
     10000,
     20000,
     30000,
@@ -87,7 +87,7 @@ OFFICIAL_DIFIX3D_EVAL_STEPS: Tuple[int, ...] = (
     55000,
     60000,
 )
-OFFICIAL_DIFIX3D_SAVE_STEPS: Tuple[int, ...] = (
+DIFIX3D_DEFAULT_SAVE_STEPS: Tuple[int, ...] = (
     10000,
     20000,
     30000,
@@ -330,7 +330,7 @@ class Trainer:
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         self.train_indices = np.array(self.trainset.indices, dtype=np.int64)
         self.train_pose_bank = self.parser.camtoworlds[self.train_indices].astype(np.float32)
-        # Official Difix3D progressive pose update starts from train poses.
+        # Difix3D-style progressive pose updates start from train poses.
         self.current_novel_poses = self.train_pose_bank.copy()
         self.interpolator = CameraPoseInterpolator(rotation_weight=1.0, translation_weight=1.0)
         self.difix_progressive_pose_bank: Dict[int, np.ndarray] = {}
@@ -428,11 +428,11 @@ class Trainer:
         for name, legacy_value in LEGACY_REDUCED_LRS.items():
             current_value = getattr(self.cfg, name)
             if math.isclose(current_value, legacy_value, rel_tol=0.0, abs_tol=1e-12):
-                setattr(self.cfg, name, OFFICIAL_VANILLA_LRS[name])
+                setattr(self.cfg, name, GSPLAT_BASELINE_LRS[name])
                 updated.append(name)
         if updated:
             joined = ", ".join(updated)
-            print(f"[trainer] recipe=vanilla restored official GS learning rates for: {joined}")
+            print(f"[trainer] recipe=vanilla restored GS baseline learning rates for: {joined}")
 
     def _apply_difix3d_recipe_defaults(self) -> None:
         if self.training_recipe != "difix3d":
@@ -444,11 +444,11 @@ class Trainer:
         if self.cfg.max_steps == 30000:
             self.cfg.max_steps = 60000
         if self.cfg.fix_steps is None:
-            self.cfg.fix_steps = steps_to_csv(OFFICIAL_DIFIX3D_FIX_STEPS)
+            self.cfg.fix_steps = steps_to_csv(DIFIX3D_DEFAULT_FIX_STEPS)
         if self.cfg.eval_steps is None:
-            self.cfg.eval_steps = steps_to_csv(OFFICIAL_DIFIX3D_EVAL_STEPS)
+            self.cfg.eval_steps = steps_to_csv(DIFIX3D_DEFAULT_EVAL_STEPS)
         if self.cfg.save_steps is None:
-            self.cfg.save_steps = steps_to_csv(OFFICIAL_DIFIX3D_SAVE_STEPS)
+            self.cfg.save_steps = steps_to_csv(DIFIX3D_DEFAULT_SAVE_STEPS)
         if not getattr(self.cfg, "_lazy_fixer_init_explicit", False):
             self.cfg.lazy_fixer_init = False
 
@@ -458,7 +458,7 @@ class Trainer:
         for name, legacy_value in LEGACY_REDUCED_LRS.items():
             current_value = getattr(self.cfg, name)
             if math.isclose(current_value, legacy_value, rel_tol=0.0, abs_tol=1e-12):
-                setattr(self.cfg, name, OFFICIAL_VANILLA_LRS[name])
+                setattr(self.cfg, name, GSPLAT_BASELINE_LRS[name])
         # Native FreeFix is staged: train the base GS first, then load the
         # diffusion prior for the post-training refinement pass.
         if not getattr(self.cfg, "_lazy_fixer_init_explicit", False):
@@ -1851,7 +1851,7 @@ def parse_args() -> Config:
     p.add_argument(
         "--difix_allow_from_scratch",
         action="store_true",
-        help="Compatibility flag; official Difix3D behavior already allows training without --ckpt.",
+        help="Compatibility flag; Difix3D-style training already allows running without --ckpt.",
     )
     p.add_argument(
         "--difix_progressive_updates",

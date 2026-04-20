@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Local Difix3D-style Nerfstudio trainer.
 
-This launcher uses the local plugin implementation under `scripts/nerfstudio_difix3d`
-instead of importing the reference plugin from `works/Difix3D`.
+This launcher uses the local plugin implementation under `scripts/nerfstudio_difix3d`.
 """
 
 from __future__ import annotations

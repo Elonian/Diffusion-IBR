@@ -1,7 +1,7 @@
 # Our FreeFix Scripts
 
 These scripts run the in-repo self-sufficient FreeFix pipeline and keep
-execution isolated from `works/*` runtime imports.
+execution isolated from external FreeFix runtime imports.
 
 - Main script:
   - `run_ours_freefix_dl3dv_scene.sh`

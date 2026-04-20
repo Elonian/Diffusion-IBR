@@ -31,11 +31,14 @@ def resolve_hf_cache_root() -> str:
 
 
 def resolve_freefix_root() -> str:
-    # Backward-compatible helper retained for older code paths.
-    return os.environ.get(
-        "DIFFUSION_IBR_FREEFIX_ROOT",
-        "/mntdatalora/src/Diffusion-IBR/scripts/freefix_impl",
-    )
+    value = os.environ.get("DIFFUSION_IBR_FREEFIX_ROOT")
+    if value is None or len(value.strip()) == 0:
+        raise RuntimeError(
+            "DIFFUSION_IBR_FREEFIX_ROOT is not set. The maintained FreeFix path "
+            "uses scripts/trainers/freefix_runner.py and does not require a "
+            "separate FreeFix source tree."
+        )
+    return str(Path(value).expanduser().resolve())
 
 
 def ensure_import_path(path: str) -> None:

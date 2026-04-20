@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Standalone vanilla Nerfacto trainer for DL3DV scenes.
 
-This script is independent from project-specific training code and uses official
+This script is independent from project-specific training code and uses upstream
 Nerfstudio trainer/config classes directly.
 
 Examples:

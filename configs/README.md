@@ -1,6 +1,7 @@
 # Diffusion-IBR Trainer Configs
 
-These JSON files are loaded with `--config` in `scripts/trainers/trainer.py`.
+These JSON files are loaded with `--config` in `scripts/trainers/trainer.py`
+or the scene-level runner noted below.
 
 ## Available presets
 
@@ -41,7 +42,7 @@ python /mntdatalora/src/Diffusion-IBR/scripts/trainers/freefix_runner.py \
 Equivalent shell entrypoint:
 
 ```bash
-bash /mntdatalora/src/Diffusion-IBR/execution_scripts/freefix/run_freefix_self_dl3dv_scene_06da7966.sh
+bash /mntdatalora/src/Diffusion-IBR/execution_scripts/freefix_ours/run_ours_freefix_flux_dl3dv_scene_06da7966.sh
 ```
 
 You can also run stages separately:

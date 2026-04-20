@@ -1,14 +1,13 @@
 """
-Clean FreeFix orchestrator for DL3DV scenes.
+Compatibility scene-level wrapper for the self-contained FreeFix runner.
 
-This script keeps the execution logic in this repository while calling the
-local FreeFix implementation under `scripts/freefix_impl` for recon/refine/eval.
+The implementation delegates to `freefix_runner.py`, which uses the local 3DGS
+trainer and diffusion fixers.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import sys
 from dataclasses import dataclass, fields
@@ -19,25 +18,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-TRAINER_DIR = Path(__file__).resolve().parent
-if str(TRAINER_DIR) not in sys.path:
-    sys.path.insert(0, str(TRAINER_DIR))
-
-import freefix_official_runner as official_runner
-
-_FREEFIX_SUPPORT_SPEC = importlib.util.spec_from_file_location(
-    "diffusion_ibr_freefix_support",
-    PROJECT_ROOT / "utils" / "freefix_support.py",
-)
-if _FREEFIX_SUPPORT_SPEC is None or _FREEFIX_SUPPORT_SPEC.loader is None:
-    raise ImportError("Failed to load utils/freefix_support.py")
-_freefix_support = importlib.util.module_from_spec(_FREEFIX_SUPPORT_SPEC)
-sys.modules[_FREEFIX_SUPPORT_SPEC.name] = _freefix_support
-_FREEFIX_SUPPORT_SPEC.loader.exec_module(_freefix_support)
-
-DEFAULT_NEGATIVE_PROMPT = _freefix_support.DEFAULT_NEGATIVE_PROMPT
-DEFAULT_PROMPT = _freefix_support.DEFAULT_PROMPT
-generate_freefix_scene_assets = _freefix_support.generate_freefix_scene_assets
+from scripts.trainers.freefix_runner import Config as SelfFreeFixConfig
+from scripts.trainers.freefix_runner import run as run_self_freefix
+from utils.freefix_support import DEFAULT_NEGATIVE_PROMPT, DEFAULT_PROMPT
 
 
 @dataclass
@@ -147,88 +130,54 @@ def parse_args() -> Config:
     return Config(**data)
 
 
-def resolve_paths(cfg: Config) -> tuple[Path, Path, Path, Path, Path, Path]:
+def resolve_paths(cfg: Config) -> tuple[Path, Path, Path, Path, Path]:
     repo_root = Path(cfg.repo_root).resolve()
     dl3dv_root = Path(cfg.dl3dv_root).resolve() if cfg.dl3dv_root else (repo_root / "data" / "DL3DV-10K-Benchmark")
-    freefix_root = Path(cfg.freefix_root).resolve() if cfg.freefix_root else (repo_root / "scripts" / "freefix_impl")
     cache_root = Path(cfg.cache_root).resolve() if cfg.cache_root else (repo_root / "cache_weights")
-    output_root = Path(cfg.output_root).resolve() if cfg.output_root else (repo_root / "outputs" / "official_freefix_clean")
+    output_root = Path(cfg.output_root).resolve() if cfg.output_root else (repo_root / "outputs" / "freefix_self_clean")
     scene_data_dir = dl3dv_root / str(cfg.scene_id) / cfg.scene_data_subdir
-    return repo_root, dl3dv_root, freefix_root, cache_root, output_root, scene_data_dir
+    return repo_root, dl3dv_root, cache_root, output_root, scene_data_dir
 
 
 def run(cfg: Config) -> None:
     if cfg.scene_id is None or len(str(cfg.scene_id).strip()) == 0:
         raise ValueError("--scene_id is required")
 
-    (
-        _repo_root,
-        _dl3dv_root,
-        freefix_root,
-        cache_root,
-        output_root,
-        scene_data_dir,
-    ) = resolve_paths(cfg)
+    repo_root, dl3dv_root, cache_root, output_root, scene_data_dir = resolve_paths(cfg)
+    del dl3dv_root
 
     output_dir = output_root / cfg.backend / str(cfg.scene_id)
-    base_cfg = Path(cfg.base_cfg).resolve() if cfg.base_cfg else (freefix_root / "exp_cfg" / "base.yaml")
-    assets = generate_freefix_scene_assets(
+    runner_cfg = SelfFreeFixConfig(
+        stage=cfg.stage,
         scene_id=str(cfg.scene_id),
-        scene_data_dir=scene_data_dir,
-        output_dir=output_dir,
         backend=cfg.backend,
+        repo_root=str(repo_root),
+        dl3dv_root=cfg.dl3dv_root,
+        scene_data_subdir=cfg.scene_data_subdir,
+        output_root=str(output_root),
+        cache_root=str(cache_root),
+        data_dir=str(scene_data_dir),
+        result_dir=str(output_dir),
+        data_factor=int(cfg.data_factor),
         test_every=cfg.test_every,
+        recon_steps=int(cfg.max_steps),
+        recon_eval_steps=cfg.eval_steps,
+        recon_save_steps=cfg.save_steps,
         prompt=cfg.prompt,
         negative_prompt=cfg.negative_prompt,
         refine_num_views=int(cfg.refine_num_views),
-        strength=cfg.strength,
-        hessian_attr=parse_hessian_attrs(cfg.hessian_attrs),
-        num_inference_steps=cfg.num_inference_steps,
-        guide_ratio=cfg.guide_ratio,
-        warp_ratio=cfg.warp_ratio,
-        refine_steps=cfg.refine_steps,
+        freefix_strength=0.5 if cfg.strength is None else float(cfg.strength),
+        freefix_hessian_attrs=",".join(parse_hessian_attrs(cfg.hessian_attrs) or ["means"]),
+        freefix_num_inference_steps=cfg.num_inference_steps,
+        freefix_guide_ratio=cfg.guide_ratio,
+        freefix_warp_ratio=cfg.warp_ratio,
+        refine_steps_per_cycle=cfg.refine_steps,
         gen_prob=cfg.gen_prob,
         gen_loss_weight=cfg.gen_loss_weight,
-        load_step=cfg.load_step,
-        data_type=cfg.data_type,
-    )
-
-    print(f"[clean-freefix] scene={assets.scene_id} backend={assets.backend}")
-    print(f"[clean-freefix] data_dir={assets.scene_data_dir}")
-    print(f"[clean-freefix] output_dir={assets.output_dir}")
-    print(f"[clean-freefix] partition={assets.partition_path}")
-    print(f"[clean-freefix] exp_cfg={assets.exp_cfg_path}")
-
-    runner_cfg = official_runner.Config(
-        stage=cfg.stage,
-        freefix_root=str(freefix_root),
-        cache_root=str(cache_root),
-        cuda_device=cfg.cuda_device,
+        device=f"cuda:{cfg.cuda_device}" if cfg.cuda_device else "cuda",
         dry_run=cfg.dry_run,
-        data_dir=str(scene_data_dir),
-        result_dir=str(output_dir),
-        data_type=cfg.data_type,
-        data_factor=int(cfg.data_factor),
-        test_every=int(cfg.test_every),
-        partition=str(assets.partition_path),
-        max_steps=int(cfg.max_steps),
-        eval_steps=cfg.eval_steps,
-        save_steps=cfg.save_steps,
-        sync_exp_base_dir_with_result_dir=bool(cfg.sync_exp_base_dir_with_result_dir),
-        backend=cfg.backend,
-        exp_cfg=str(assets.exp_cfg_path),
-        base_cfg=str(base_cfg),
-        eval_test=bool(cfg.eval_test),
-        test_from_train=bool(cfg.test_from_train),
     )
-
-    official_runner._set_runtime_env(runner_cfg)
-    if runner_cfg.stage in {"recon", "full"}:
-        official_runner.run_recon(runner_cfg)
-    if runner_cfg.stage in {"refine", "full"}:
-        official_runner.run_refine(runner_cfg)
-    if runner_cfg.stage in {"eval", "full"}:
-        official_runner.run_eval(runner_cfg)
+    run_self_freefix(runner_cfg)
 
 
 def main() -> None:

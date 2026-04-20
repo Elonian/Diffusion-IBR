@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
+import numpy as np
 import torch
 from PIL import Image
 
@@ -16,6 +17,10 @@ sys.path.insert(0, project_root_str)
 from scripts.priors.difix import CustomDifixFixer
 from scripts.priors.flux import CustomFluxFixer
 from scripts.priors.sdxl import CustomSDXLFixer
+from utils.diffusion_utils import to_pil_image
+
+ImageInput = Union[Image.Image, torch.Tensor, np.ndarray]
+MaskInput = Union[ImageInput, Sequence[ImageInput]]
 
 
 class DiffusionFixer:
@@ -65,12 +70,12 @@ class DiffusionFixer:
     def __call__(
         self,
         prompt: str,
-        image: Image.Image,
+        image: ImageInput,
         negative_prompt: Optional[str] = None,
-        ref_image: Optional[Image.Image] = None,
-        mask: Optional[Union[Image.Image, Sequence[Image.Image]]] = None,
-        warp_image: Optional[Image.Image] = None,
-        warp_mask: Optional[Image.Image] = None,
+        ref_image: Optional[ImageInput] = None,
+        mask: Optional[MaskInput] = None,
+        warp_image: Optional[ImageInput] = None,
+        warp_mask: Optional[ImageInput] = None,
         mask_scheduler: Optional[list[int]] = None,
         guide_until: Optional[float] = None,
         warp_until: Optional[float] = None,
@@ -94,12 +99,13 @@ class DiffusionFixer:
                 num_inference_steps=num_inference_steps,
                 timestep=timestep,
                 guidance_scale=guidance_scale,
-                # Official Difix3D fixer calls do not pass a generator.
                 generator=None,
             )
 
         if generator is None:
             generator = self._build_generator(64 if seed is None else seed)
+
+        image_for_size = image if isinstance(image, Image.Image) else to_pil_image(image)
 
         # -------- 2) Run deterministic non-DIFIX fixer backend --------
         if num_inference_steps is None:
@@ -118,8 +124,8 @@ class DiffusionFixer:
             if warp_until is not None
             else (num_inference_steps // 2 if (warp_image is not None or ref_image is not None) else None),
             warp_mask=warp_mask,
-            height=image.height,
-            width=image.width,
+            height=image_for_size.height,
+            width=image_for_size.width,
             guidance_scale=guidance_scale,
             num_inference_steps=num_inference_steps,
             generator=generator,

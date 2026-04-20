@@ -79,8 +79,8 @@ def build_partition_indices(
         train_indices = [idx for idx in range(num_images) if idx % test_every == 0]
         test_indices = [idx for idx in range(num_images) if idx % test_every != 0]
     else:
-        # Official FreeFix COLMAP training uses every image when no partition
-        # is supplied, while evaluation/test views are still idx % test_every == 0.
+        # FreeFix-style COLMAP training uses every image when no partition is
+        # supplied, while evaluation/test views are still idx % test_every == 0.
         test_indices = [idx for idx in range(num_images) if idx % test_every == 0]
         train_indices = list(range(num_images))
     if len(train_indices) == 0 or len(test_indices) == 0:
@@ -122,8 +122,8 @@ def write_partition_file(
 
 
 def _backend_defaults(backend: str) -> tuple[str, float, list[str]]:
-    # Match the official FreeFix base config. Scene-specific official configs
-    # can still override these values through the generated exp cfg.
+    # Match the local FreeFix-style base config. Scene-specific configs can
+    # still override these values through the generated exp cfg.
     if backend == "flux":
         return "flux", 0.5, ["means"]
     return "sdxl", 0.5, ["means"]

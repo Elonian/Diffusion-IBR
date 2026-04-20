@@ -1,4 +1,3 @@
-import os
 import sys
 from pathlib import Path
 from typing import Optional, Union
@@ -7,30 +6,18 @@ import numpy as np
 import torch
 from PIL import Image
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+project_root_str = str(PROJECT_ROOT)
+if project_root_str in sys.path:
+    sys.path.remove(project_root_str)
+sys.path.insert(0, project_root_str)
 
-def _resolve_hf_cache_root() -> str:
-    cache_root = os.environ.get("DIFFUSION_IBR_CACHE_DIR", "/mntdatalora/src/Diffusion-IBR/cache_weights")
-    hf_home = os.path.join(cache_root, "huggingface")
-    hf_hub_cache = os.path.join(hf_home, "hub")
-    transformers_cache = os.path.join(hf_home, "transformers")
-    os.makedirs(hf_hub_cache, exist_ok=True)
-    os.makedirs(transformers_cache, exist_ok=True)
-    os.environ.setdefault("HF_HOME", hf_home)
-    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", hf_hub_cache)
-    os.environ.setdefault("TRANSFORMERS_CACHE", transformers_cache)
-    return hf_hub_cache
-
-
-def _ensure_import_path(path: str) -> None:
-    resolved = str(Path(path).resolve())
-    if resolved in sys.path:
-        sys.path.remove(resolved)
-    sys.path.insert(0, resolved)
+from utils.diffusion_utils import ensure_import_path, resolve_hf_cache_root, to_pil_image
 
 
 class CustomDifixFixer:
     """
-    Thin wrapper around pretrained DIFIX pipelines (e.g. nvidia/difix_ref).
+    Thin wrapper around the local DIFIX pipeline loader and released weights.
     """
 
     def __init__(
@@ -42,16 +29,15 @@ class CustomDifixFixer:
         cache_dir: Optional[str] = None,
     ) -> None:
         self.device = device
-        self.cache_dir = cache_dir or _resolve_hf_cache_root()
-        project_root = Path(__file__).resolve().parents[2]
-        _ensure_import_path(str(project_root))
+        self.cache_dir = cache_dir or resolve_hf_cache_root()
+        ensure_import_path(str(PROJECT_ROOT))
 
         source = model_path if model_path is not None else model_id
         try:
             from scripts.priors.src.pipeline_difix import DifixPipeline
         except Exception as exc:
             raise RuntimeError(
-                "Failed to import the local vendored DifixPipeline from scripts/priors/src/pipeline_difix.py."
+                "Failed to import the local DifixPipeline from scripts/priors/src/pipeline_difix.py."
             ) from exc
 
         load_kwargs = {
@@ -65,31 +51,7 @@ class CustomDifixFixer:
 
     @staticmethod
     def _to_pil(image: Union[Image.Image, torch.Tensor, np.ndarray]) -> Image.Image:
-        if isinstance(image, Image.Image):
-            return image.convert("RGB")
-        if isinstance(image, torch.Tensor):
-            arr = image.detach().cpu().float().numpy()
-            if arr.ndim == 3 and arr.shape[0] in (1, 3):
-                arr = np.transpose(arr, (1, 2, 0))
-            if arr.max() <= 1.0:
-                arr = arr * 255.0
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-            if arr.ndim == 2:
-                arr = np.stack([arr, arr, arr], axis=-1)
-            if arr.shape[-1] == 1:
-                arr = np.repeat(arr, 3, axis=-1)
-            return Image.fromarray(arr).convert("RGB")
-        if isinstance(image, np.ndarray):
-            arr = image
-            if arr.max() <= 1.0:
-                arr = arr * 255.0
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-            if arr.ndim == 2:
-                arr = np.stack([arr, arr, arr], axis=-1)
-            if arr.shape[-1] == 1:
-                arr = np.repeat(arr, 3, axis=-1)
-            return Image.fromarray(arr).convert("RGB")
-        raise TypeError(f"Unsupported image type: {type(image)}")
+        return to_pil_image(image)
 
     def __call__(
         self,
