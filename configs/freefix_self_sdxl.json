@@ -10,7 +10,7 @@
   "recon_eval_steps": "7000,30000",
   "recon_save_steps": "7000,30000",
   "refine_cycles": 1,
-  "refine_steps_per_cycle": 400,
+  "refine_steps_per_cycle": 800,
   "refine_num_views": 0,
   "prompt": "A photorealistic real-world scene with consistent geometry, detailed textures, and natural lighting.",
   "negative_prompt": "blurry, low quality, foggy, overall gray, subtitles, incomplete, ghost image, too close to camera",

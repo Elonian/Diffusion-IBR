@@ -6,6 +6,7 @@ refinement modes.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import math
 import random
@@ -128,7 +129,7 @@ class Config:
     strategy_refine_start_iter: int = 500
     strategy_refine_stop_iter: int = 15000
     strategy_reset_every: int = 3000
-    strategy_refine_every: int = 100
+    strategy_refine_every: int = 200
     near_plane: float = 0.01
     far_plane: float = 1e10
     camera_model: str = "pinhole"
@@ -372,7 +373,7 @@ class Trainer:
                 revised_opacity=False,
             )
         self.strategy.check_sanity(self.splats, self.optimizers)
-        self.strategy_state = self.strategy.initialize_state(scene_scale=self.scene_scale)
+        self.strategy_state = self._initialize_strategy_state()
 
         self.novel_loader: Optional[DataLoader] = None
         self.novel_loader_iter = None
@@ -539,6 +540,32 @@ class Trainer:
                 difix_model_path=cfg.difix_model_path,
             )
         return self.fixer
+
+    @staticmethod
+    def _method_accepts_kwarg(method: Any, name: str) -> bool:
+        try:
+            params = inspect.signature(method).parameters
+        except (TypeError, ValueError):
+            return False
+        return name in params or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+
+    def _initialize_strategy_state(self) -> Dict[str, Any]:
+        initialize_state = self.strategy.initialize_state
+        if self._method_accepts_kwarg(initialize_state, "scene_scale"):
+            return initialize_state(scene_scale=self.scene_scale)
+        return initialize_state()
+
+    def _strategy_step_post_backward(self, *, step: int, info: Dict[str, Any]) -> None:
+        kwargs: Dict[str, Any] = {
+            "params": self.splats,
+            "optimizers": self.optimizers,
+            "state": self.strategy_state,
+            "step": step,
+            "info": info,
+        }
+        if self._method_accepts_kwarg(self.strategy.step_post_backward, "packed"):
+            kwargs["packed"] = self.cfg.packed
+        self.strategy.step_post_backward(**kwargs)
 
     def _build_freefix_infer_steps(self) -> int:
         return max(1, int(self.cfg.freefix_num_inference_steps * self.cfg.freefix_strength))
@@ -1164,7 +1191,7 @@ class Trainer:
             revised_opacity=False,
         )
         self.strategy.check_sanity(self.splats, self.optimizers)
-        self.strategy_state = self.strategy.initialize_state()
+        self.strategy_state = self._initialize_strategy_state()
 
     def _reset_freefix_refine_optimizers(self) -> None:
         for param in self.splats.values():
@@ -1260,14 +1287,7 @@ class Trainer:
 
             loss.backward()
 
-            self.strategy.step_post_backward(
-                params=self.splats,
-                optimizers=self.optimizers,
-                state=self.strategy_state,
-                step=refine_step,
-                info=info,
-                packed=self.cfg.packed,
-            )
+            self._strategy_step_post_backward(step=refine_step, info=info)
 
             for optimizer in self.optimizers.values():
                 optimizer.step()
@@ -1518,14 +1538,7 @@ class Trainer:
 
             post_before_optimizer = self.training_recipe in {"vanilla", "freefix"}
             if post_before_optimizer:
-                self.strategy.step_post_backward(
-                    params=self.splats,
-                    optimizers=self.optimizers,
-                    state=self.strategy_state,
-                    step=step,
-                    info=info,
-                    packed=cfg.packed,
-                )
+                self._strategy_step_post_backward(step=step, info=info)
 
             should_save = (
                 bool(self.save_steps)
@@ -1566,14 +1579,7 @@ class Trainer:
             lr_sched.step()
 
             if not post_before_optimizer:
-                self.strategy.step_post_backward(
-                    params=self.splats,
-                    optimizers=self.optimizers,
-                    state=self.strategy_state,
-                    step=step,
-                    info=info,
-                    packed=cfg.packed,
-                )
+                self._strategy_step_post_backward(step=step, info=info)
 
             if should_save and self.training_recipe in {"vanilla", "freefix"}:
                 ckpt = self.save_checkpoint(step)

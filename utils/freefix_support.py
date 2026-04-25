@@ -18,6 +18,7 @@ DEFAULT_NEGATIVE_PROMPT = (
     "blurry, low quality, foggy, overall gray, subtitles, incomplete, ghost image, "
     "too close to camera"
 )
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
 @dataclass
@@ -61,7 +62,9 @@ def _scene_images(scene_data_dir: Path) -> list[Path]:
     image_dir = scene_data_dir / "images"
     if not image_dir.is_dir():
         raise ValueError(f"Missing COLMAP image directory: {image_dir}")
-    image_paths = sorted(path for path in image_dir.rglob("*") if path.is_file())
+    image_paths = sorted(
+        path for path in image_dir.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+    )
     if len(image_paths) == 0:
         raise ValueError(f"No images found in {image_dir}")
     return image_paths

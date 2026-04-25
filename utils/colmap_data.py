@@ -16,11 +16,15 @@ import pycolmap
 from .camera_normalization import normalize_cameras_and_points
 
 
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+
+
 def _get_rel_paths(path_dir: str) -> List[str]:
     paths = []
     for dp, _, fn in os.walk(path_dir):
         for name in fn:
-            paths.append(os.path.relpath(os.path.join(dp, name), path_dir))
+            if os.path.splitext(name)[1].lower() in IMAGE_SUFFIXES:
+                paths.append(os.path.relpath(os.path.join(dp, name), path_dir))
     return paths
 
 

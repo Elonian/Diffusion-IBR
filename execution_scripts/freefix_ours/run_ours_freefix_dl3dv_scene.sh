@@ -12,6 +12,11 @@ RUNNER_PY="${REPO_ROOT}/scripts/trainers/freefix_runner.py"
 LOG_ROOT="${REPO_ROOT}/logs/execution"
 
 SCENE_ID="${1:-032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7}"
+EXTRA_RUNNER_ARGS=()
+if [[ "$#" -gt 0 ]]; then
+  shift
+  EXTRA_RUNNER_ARGS=("$@")
+fi
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
   if [[ -x "/opt/conda/bin/python" ]]; then
@@ -29,7 +34,10 @@ TEST_EVERY="${TEST_EVERY:-8}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 RECON_STEPS="${RECON_STEPS:-30000}"
 REFINE_CYCLES="${REFINE_CYCLES:-1}"
-REFINE_STEPS_PER_CYCLE="${REFINE_STEPS_PER_CYCLE:-400}"
+# FreeFix refines once over the target trajectory. 800 steps per view makes a
+# 40-view run ~32.8k extra 3D steps after ckpt_29999, matching the paper's
+# Difix3D-comparable refinement budget.
+REFINE_STEPS_PER_CYCLE="${REFINE_STEPS_PER_CYCLE:-800}"
 REFINE_NUM_VIEWS="${REFINE_NUM_VIEWS:-0}"
 
 FREEFIX_NUM_INFERENCE_STEPS="${FREEFIX_NUM_INFERENCE_STEPS:-50}"
@@ -196,6 +204,10 @@ CMD=(
   --negative_prompt "${NEGATIVE_PROMPT}"
   --python_bin "${PYTHON_BIN}"
 )
+
+if [[ "${#EXTRA_RUNNER_ARGS[@]}" -gt 0 ]]; then
+  CMD+=("${EXTRA_RUNNER_ARGS[@]}")
+fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   CMD+=(--dry_run)
