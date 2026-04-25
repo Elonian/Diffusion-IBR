@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -202,12 +203,25 @@ def _default_refined_ckpt(result_dir: Path, cfg: Config) -> Path:
     return result_dir / "ckpts" / f"ckpt_freefix_{cfg.backend}_rank0.pt"
 
 
-def _trainer_kwargs(cfg: Config, data_dir: Path, result_dir: Path, recipe: str) -> dict:
+def _resolve_hf_cache_dir(cfg: Config) -> str:
     cache_root = (
-        str(Path(cfg.cache_root).expanduser().resolve())
+        Path(cfg.cache_root).expanduser().resolve()
         if cfg.cache_root
-        else str(Path(cfg.repo_root).expanduser().resolve() / "cache_weights")
+        else Path(cfg.repo_root).expanduser().resolve() / "cache_weights"
     )
+    hub_dir = cache_root if cache_root.name == "hub" else cache_root / "huggingface" / "hub"
+    hf_home = hub_dir.parent if hub_dir.name == "hub" else cache_root / "huggingface"
+    transformers_cache = hf_home / "transformers"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    transformers_cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HOME", str(hf_home))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hub_dir))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(transformers_cache))
+    return str(hub_dir)
+
+
+def _trainer_kwargs(cfg: Config, data_dir: Path, result_dir: Path, recipe: str) -> dict:
+    cache_dir = _resolve_hf_cache_dir(cfg)
     return {
         "data_dir": str(data_dir),
         "result_dir": str(result_dir),
@@ -226,7 +240,7 @@ def _trainer_kwargs(cfg: Config, data_dir: Path, result_dir: Path, recipe: str) 
         "device": cfg.device,
         "training_recipe": recipe,
         "use_freefix": recipe == "freefix",
-        "fix_cache_dir": cache_root,
+        "fix_cache_dir": cache_dir,
         "freefix_backend": cfg.backend,
         "freefix_prompt": cfg.prompt,
         "freefix_negative_prompt": cfg.negative_prompt,

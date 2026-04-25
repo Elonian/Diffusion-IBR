@@ -31,14 +31,10 @@ def resolve_hf_cache_root() -> str:
 
 
 def resolve_freefix_root() -> str:
-    value = os.environ.get("DIFFUSION_IBR_FREEFIX_ROOT")
-    if value is None or len(value.strip()) == 0:
-        raise RuntimeError(
-            "DIFFUSION_IBR_FREEFIX_ROOT is not set. The maintained FreeFix path "
-            "uses scripts/trainers/freefix_runner.py and does not require a "
-            "separate FreeFix source tree."
-        )
-    return str(Path(value).expanduser().resolve())
+    local_root = Path(__file__).resolve().parents[1] / "scripts" / "freefix_impl"
+    if not local_root.is_dir():
+        raise RuntimeError(f"Embedded FreeFix implementation is missing: {local_root}")
+    return str(local_root.resolve())
 
 
 def ensure_import_path(path: str) -> None:
@@ -75,7 +71,14 @@ def to_mask_stack(
     size: tuple[int, int],
     device: Union[str, torch.device],
 ) -> torch.Tensor:
-    def _single_to_array(single_mask: ImageLike) -> np.ndarray:
+    def _resize_array(arr: np.ndarray) -> np.ndarray:
+        arr = np.clip(arr, 0.0, 1.0)
+        if arr.shape == (size[1], size[0]):
+            return arr.astype(np.float32)
+        resized = Image.fromarray((arr * 255.0).astype(np.uint8), mode="L").resize(size, Image.LANCZOS)
+        return np.array(resized, dtype=np.float32) / 255.0
+
+    def _single_to_arrays(single_mask: ImageLike) -> list[np.ndarray]:
         if isinstance(single_mask, Image.Image):
             arr = np.array(single_mask.convert("L"), dtype=np.float32)
         elif isinstance(single_mask, torch.Tensor):
@@ -85,25 +88,25 @@ def to_mask_stack(
         else:
             raise TypeError(f"Unsupported mask type: {type(single_mask)}")
 
+        arr_max = float(arr.max()) if arr.size else 0.0
+        if arr_max > 1.0:
+            arr = arr / 255.0
+        if arr.ndim == 2:
+            return [_resize_array(arr)]
         if arr.ndim == 3:
             if arr.shape[-1] in (1, 3):
-                arr = arr[..., 0]
-            elif arr.shape[0] in (1, 3):
-                arr = arr[0]
-            else:
-                arr = arr[..., 0]
-        if arr.max() > 1.0:
-            arr = arr / 255.0
-        arr = np.clip(arr, 0.0, 1.0)
-        if arr.shape == (size[1], size[0]):
-            return arr.astype(np.float32)
-        resized = Image.fromarray((arr * 255.0).astype(np.uint8), mode="L").resize(size, Image.LANCZOS)
-        return np.array(resized, dtype=np.float32) / 255.0
+                return [_resize_array(arr[..., 0])]
+            if arr.shape[1:] == (size[1], size[0]) or arr.shape[1:] == (size[0], size[1]):
+                return [_resize_array(arr[i]) for i in range(arr.shape[0])]
+            if arr.shape[0] in (1, 3):
+                return [_resize_array(arr[0])]
+            return [_resize_array(arr[..., 0])]
+        raise ValueError(f"Unsupported mask shape: {arr.shape}")
 
     if isinstance(mask, Sequence) and not isinstance(mask, (Image.Image, np.ndarray, torch.Tensor)):
-        arrays = [_single_to_array(m) for m in mask]
+        arrays = [arr for m in mask for arr in _single_to_arrays(m)]
     else:
-        arrays = [_single_to_array(mask)]  # type: ignore[arg-type]
+        arrays = _single_to_arrays(mask)  # type: ignore[arg-type]
 
     stacked = np.stack(arrays, axis=0)
     return torch.from_numpy(stacked).float().to(device)

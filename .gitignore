@@ -5,5 +5,8 @@ logs/
 outputs/
 works/
 datasets/
+checkpoints/
+.venv*/
 
 **.pyc
+__pycache__/

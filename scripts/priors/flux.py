@@ -15,12 +15,42 @@ if project_root_str in sys.path:
 sys.path.insert(0, project_root_str)
 
 from utils.diffusion_utils import (
-    blend_images,
-    combine_mask_stack,
     resolve_hf_cache_root,
     to_mask_stack,
     to_pil_image,
 )
+
+FREEFIX_IMPL_ROOT = PROJECT_ROOT / "scripts" / "freefix_impl"
+freefix_impl_root_str = str(FREEFIX_IMPL_ROOT)
+if freefix_impl_root_str in sys.path:
+    sys.path.remove(freefix_impl_root_str)
+sys.path.insert(0, freefix_impl_root_str)
+
+
+def _evict_foreign_freefix_modules() -> None:
+    impl_root = FREEFIX_IMPL_ROOT.resolve()
+
+    def _under_impl(path: object) -> bool:
+        try:
+            Path(str(path)).resolve().relative_to(impl_root)
+        except ValueError:
+            return False
+        return True
+
+    for module_name, module in list(sys.modules.items()):
+        if not (
+            module_name in {"ours", "recon", "schedulers"}
+            or module_name.startswith(("ours.", "recon.", "schedulers."))
+        ):
+            continue
+        module_file = getattr(module, "__file__", None)
+        if module_file is None:
+            module_paths = list(getattr(module, "__path__", []))
+            if not module_paths or not all(_under_impl(path) for path in module_paths):
+                sys.modules.pop(module_name, None)
+            continue
+        if not _under_impl(module_file):
+            sys.modules.pop(module_name, None)
 
 
 def _image_size(image: Union[Image.Image, torch.Tensor, np.ndarray]) -> tuple[int, int]:
@@ -35,12 +65,10 @@ def _image_size(image: Union[Image.Image, torch.Tensor, np.ndarray]) -> tuple[in
 
 class CustomFluxFixer:
     """
-    Local FreeFix-style Flux backend.
+    Local FreeFix Flux backend.
 
-    The diffusion pass uses the installed Diffusers FLUX img2img pipeline. The
-    project-specific mask/warp guidance is applied as a deterministic image
-    blend after denoising, which keeps this wrapper independent from external
-    FreeFix Python trees.
+    This uses the embedded FreeFix pipeline/scheduler implementation under
+    scripts/freefix_impl, not the external official worktree.
     """
 
     def __init__(
@@ -55,14 +83,16 @@ class CustomFluxFixer:
         self.model_id = model_id
 
         try:
-            from diffusers import FlowMatchEulerDiscreteScheduler, FluxImg2ImgPipeline
+            _evict_foreign_freefix_modules()
+            from ours.pipelines.flux_pipeline import FluxPipeline
+            from ours.schedulers.flow_match_euler_discrete_scheduler import FlowMatchEulerDiscreteScheduler
         except Exception as exc:
             raise RuntimeError(
-                "CustomFluxFixer requires a Diffusers installation that provides "
-                "FluxImg2ImgPipeline and FlowMatchEulerDiscreteScheduler."
+                "CustomFluxFixer requires the embedded FreeFix Flux pipeline under "
+                f"{FREEFIX_IMPL_ROOT}."
             ) from exc
 
-        self.pipe = FluxImg2ImgPipeline.from_pretrained(
+        self.pipe = FluxPipeline.from_pretrained(
             self.model_id,
             torch_dtype=torch_dtype,
             cache_dir=self.cache_dir,
@@ -109,6 +139,8 @@ class CustomFluxFixer:
             if mask_scheduler is None:
                 raise ValueError("mask_scheduler is required when mask is provided for FreeFix Flux.")
             mask_tensor = to_mask_stack(mask, (width, height), device=self.device)
+        else:
+            guide_until = 0
 
         warp_image_pil = None
         if warp_image is not None:
@@ -120,11 +152,19 @@ class CustomFluxFixer:
         warp_mask_tensor = None
         if warp_mask is not None:
             warp_mask_tensor = to_mask_stack(warp_mask, (width, height), device=self.device)[0]
+        effective_guide_until = 0.0 if guide_until is None else float(guide_until)
+        effective_warp_until = 0.0 if warp_mask_tensor is None else (0.0 if warp_until is None else float(warp_until))
 
         output = self.pipe(
             prompt,
             negative_prompt=negative_prompt,
             image=input_image,
+            mask=mask_tensor,
+            mask_scheduler=mask_scheduler,
+            guide_until=effective_guide_until,
+            warp_image=warp_image_pil,
+            warp_until=effective_warp_until,
+            warp_mask=warp_mask_tensor,
             height=height,
             width=width,
             guidance_scale=float(guidance_scale),
@@ -132,25 +172,4 @@ class CustomFluxFixer:
             generator=generator,
             strength=float(strength),
         )
-        edited = output.images[0].resize((width, height), Image.LANCZOS)
-
-        if mask_tensor is None and warp_mask_tensor is None:
-            return edited
-
-        if mask_tensor is None:
-            edit_weight = torch.ones((height, width), dtype=torch.float32, device=self.device)
-        else:
-            infer_steps = max(1, int(num_inference_steps * strength))
-            edit_weight = combine_mask_stack(
-                mask_tensor,
-                mask_scheduler=mask_scheduler,
-                infer_steps=infer_steps,
-            )
-        if warp_mask_tensor is not None and warp_until is not None and float(warp_until) > 0:
-            edit_weight = edit_weight * (
-                1.0 - warp_mask_tensor.to(edit_weight.device).float().clamp(0.0, 1.0)
-            )
-
-        weight_u8 = (edit_weight.detach().cpu().clamp(0.0, 1.0).numpy() * 255.0).astype(np.uint8)
-        blend_base = warp_image_pil if isinstance(warp_image_pil, Image.Image) else input_image
-        return blend_images(blend_base, edited, Image.fromarray(weight_u8, mode="L"))
+        return output.images[0].resize((width, height), Image.LANCZOS)

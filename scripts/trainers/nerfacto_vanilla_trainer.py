@@ -19,10 +19,16 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import random
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# Nerfstudio 1.1.x calls torch.load() without weights_only. PyTorch 2.6+
+# defaults that call to weights_only=True, which breaks trusted Nerfstudio
+# training checkpoints that include optimizer/scheduler metadata.
+os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 
 import numpy as np
 import torch
@@ -73,6 +79,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--steps_per_save", type=int, default=2000)
     parser.add_argument("--disable_mixed_precision", action="store_true")
     parser.add_argument("--save_all_checkpoints", action="store_true")
+    parser.add_argument(
+        "--auto_resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Resume from the latest checkpoint in the deterministic output folder when it exists.",
+    )
+    parser.add_argument("--load_dir", type=Path, default=None, help="Optional Nerfstudio checkpoint directory.")
+    parser.add_argument("--load_step", type=int, default=None, help="Optional checkpoint step to load from --load_dir.")
+    parser.add_argument("--load_checkpoint", type=Path, default=None, help="Optional explicit Nerfstudio checkpoint file.")
     parser.add_argument(
         "--vis",
         choices=[
@@ -300,6 +315,17 @@ def _build_config(args: argparse.Namespace, data_path: Path, experiment_name: st
     cfg.machine.machine_rank = args.machine_rank
     cfg.machine.dist_url = args.dist_url
     cfg.data = data_path
+
+    load_dir = args.load_dir.expanduser().resolve() if args.load_dir is not None else None
+    if load_dir is None and args.auto_resume:
+        candidate_load_dir = cfg.output_dir / experiment_name / args.method_name / "nerfstudio_models"
+        if candidate_load_dir.is_dir() and any(candidate_load_dir.glob("step-*.ckpt")):
+            load_dir = candidate_load_dir
+    if load_dir is not None:
+        cfg.load_dir = load_dir
+        cfg.load_step = args.load_step
+    if args.load_checkpoint is not None:
+        cfg.load_checkpoint = args.load_checkpoint.expanduser().resolve()
     return cfg
 
 
@@ -312,6 +338,10 @@ def _print_summary(cfg: Any, data_path: Path, scene_id: Optional[str]) -> None:
     print("[info] Method:", cfg.method_name)
     print("[info] Device:", cfg.machine.device_type, "num_devices=", cfg.machine.num_devices)
     print("[info] Max iterations:", cfg.max_num_iterations)
+    if cfg.load_dir is not None:
+        print("[info] Resume load dir:", cfg.load_dir)
+    if cfg.load_checkpoint is not None:
+        print("[info] Resume checkpoint:", cfg.load_checkpoint)
 
 
 def _set_random_seed(seed: int) -> None:

@@ -23,12 +23,100 @@ SETUP_ONLY="${SETUP_ONLY:-0}"
 SKIP_CUDA_PREFLIGHT="${SKIP_CUDA_PREFLIGHT:-0}"
 FORCE_RETRAIN="${FORCE_RETRAIN:-0}"
 BASELINE_MAX_STEPS="${BASELINE_MAX_STEPS:-60000}"
+BASELINE_SAVE_EVERY="${BASELINE_SAVE_EVERY:-10000}"
+BASELINE_SAVE_STEPS="${BASELINE_SAVE_STEPS:-}"
+BASELINE_EVAL_STEPS="${BASELINE_EVAL_STEPS:-}"
 SKIP_ACTIVATE_SCRIPT="${SKIP_ACTIVATE_SCRIPT:-0}"
+
+require_positive_int() {
+  local name="$1"
+  local value="$2"
+
+  if ! [[ "${value}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${name} must be a positive integer, got: ${value}" >&2
+    exit 1
+  fi
+}
+
+require_positive_int "BASELINE_MAX_STEPS" "${BASELINE_MAX_STEPS}"
+require_positive_int "BASELINE_SAVE_EVERY" "${BASELINE_SAVE_EVERY}"
 
 SCENE_DIR="${DL3DV_ROOT}/${SCENE_ID}"
 GS_DATA_DIR="${SCENE_DIR}/gaussian_splat"
-BASELINE_OUT="${REPO_ROOT}/outputs/official_3dgs_full_baseline/${SCENE_ID}"
+BASELINE_OUT="${BASELINE_OUT:-${REPO_ROOT}/outputs/official_3dgs_full_baseline/${SCENE_ID}}"
 FINAL_CKPT="${BASELINE_OUT}/ckpts/ckpt_$((BASELINE_MAX_STEPS - 1))_rank0.pt"
+
+build_step_schedule() {
+  local max_steps="$1"
+  local every_steps="$2"
+  local step
+
+  for ((step = every_steps; step < max_steps; step += every_steps)); do
+    echo "${step}"
+  done
+  echo "${max_steps}"
+}
+
+if [[ -n "${BASELINE_SAVE_STEPS}" ]]; then
+  read -r -a BASELINE_SAVE_STEP_ARGS <<< "${BASELINE_SAVE_STEPS}"
+else
+  mapfile -t BASELINE_SAVE_STEP_ARGS < <(build_step_schedule "${BASELINE_MAX_STEPS}" "${BASELINE_SAVE_EVERY}")
+fi
+
+if [[ -n "${BASELINE_EVAL_STEPS}" ]]; then
+  read -r -a BASELINE_EVAL_STEP_ARGS <<< "${BASELINE_EVAL_STEPS}"
+else
+  BASELINE_EVAL_STEP_ARGS=("${BASELINE_SAVE_STEP_ARGS[@]}")
+fi
+
+validate_step_args() {
+  local name="$1"
+  local step
+  shift
+
+  if [[ "$#" -eq 0 ]]; then
+    echo "${name} must contain at least one positive integer step." >&2
+    exit 1
+  fi
+
+  for step in "$@"; do
+    require_positive_int "${name}" "${step}"
+  done
+}
+
+validate_save_steps() {
+  local step
+
+  validate_step_args "BASELINE_SAVE_STEPS" "${BASELINE_SAVE_STEP_ARGS[@]}"
+  for step in "${BASELINE_SAVE_STEP_ARGS[@]}"; do
+    if (( step > BASELINE_MAX_STEPS )); then
+      echo "BASELINE_SAVE_STEPS cannot contain a step greater than BASELINE_MAX_STEPS (${BASELINE_MAX_STEPS}): ${step}" >&2
+      exit 1
+    fi
+  done
+}
+
+validate_step_args "BASELINE_EVAL_STEPS" "${BASELINE_EVAL_STEP_ARGS[@]}"
+validate_save_steps
+
+expected_checkpoint_files() {
+  local save_step
+
+  for save_step in "${BASELINE_SAVE_STEP_ARGS[@]}"; do
+    echo "${BASELINE_OUT}/ckpts/ckpt_$((save_step - 1))_rank0.pt"
+  done
+  echo "${FINAL_CKPT}"
+}
+
+missing_expected_checkpoints() {
+  local ckpt_path
+
+  while IFS= read -r ckpt_path; do
+    if [[ ! -f "${ckpt_path}" ]]; then
+      echo "${ckpt_path}"
+    fi
+  done < <(expected_checkpoint_files | sort -u)
+}
 
 setup_logging() {
   local timestamp host_name script_name
@@ -62,9 +150,15 @@ if [[ "${SKIP_ACTIVATE_SCRIPT}" != "1" && -f "${ACTIVATE_SCRIPT}" ]]; then
   source "${ACTIVATE_SCRIPT}"
 fi
 
-if [[ -d "${PERSISTENT_PYTHON_SITE_PACKAGES}" ]]; then
+if [[ -d "${PERSISTENT_PYTHON_SITE_PACKAGES}" ]] && PYTHONPATH="${PERSISTENT_PYTHON_SITE_PACKAGES}:${PYTHONPATH:-}" "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import numpy
+PY
+then
   export PYTHONPATH="${PERSISTENT_PYTHON_SITE_PACKAGES}:${OFFICIAL_DIFIX3D_ROOT}:${PYTHONPATH:-}"
 else
+  if [[ -d "${PERSISTENT_PYTHON_SITE_PACKAGES}" ]]; then
+    echo "[setup] Ignoring broken persistent Python site-packages: ${PERSISTENT_PYTHON_SITE_PACKAGES}" >&2
+  fi
   export PYTHONPATH="${OFFICIAL_DIFIX3D_ROOT}:${PYTHONPATH:-}"
 fi
 
@@ -170,6 +264,8 @@ echo "Scene: ${SCENE_ID}"
 echo "Data: ${GS_DATA_DIR}"
 echo "Baseline output: ${BASELINE_OUT}"
 echo "Target steps: ${BASELINE_MAX_STEPS}"
+echo "Save steps: ${BASELINE_SAVE_STEP_ARGS[*]}"
+echo "Eval steps: ${BASELINE_EVAL_STEP_ARGS[*]}"
 echo
 
 if [[ "${INSTALL_DEPS}" == "1" ]]; then
@@ -205,7 +301,13 @@ if [[ "${SETUP_ONLY}" == "1" ]]; then
   exit 0
 fi
 
-if [[ "${FORCE_RETRAIN}" == "1" || ! -f "${FINAL_CKPT}" ]]; then
+mapfile -t MISSING_BASELINE_CKPTS < <(missing_expected_checkpoints)
+
+if [[ "${FORCE_RETRAIN}" == "1" || "${#MISSING_BASELINE_CKPTS[@]}" -gt 0 ]]; then
+  if [[ "${FORCE_RETRAIN}" != "1" && "${#MISSING_BASELINE_CKPTS[@]}" -gt 0 ]]; then
+    echo "[1/1] Missing expected baseline checkpoints; training is required:"
+    printf '      %s\n' "${MISSING_BASELINE_CKPTS[@]}"
+  fi
   echo "[1/1] Train official vanilla gsplat baseline"
   CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" "${PYTHON_BIN}" examples/gsplat/simple_trainer_vanilla.py default \
     --data_dir "${GS_DATA_DIR}" \
@@ -214,15 +316,17 @@ if [[ "${FORCE_RETRAIN}" == "1" || ! -f "${FINAL_CKPT}" ]]; then
     --no-normalize-world-space \
     --test_every "${TEST_EVERY}" \
     --max_steps "${BASELINE_MAX_STEPS}" \
-    --eval_steps 7000 30000 "${BASELINE_MAX_STEPS}" \
-    --save_steps 7000 30000 "${BASELINE_MAX_STEPS}"
+    --eval_steps "${BASELINE_EVAL_STEP_ARGS[@]}" \
+    --save_steps "${BASELINE_SAVE_STEP_ARGS[@]}"
 else
-  echo "[1/1] Skipping training because final baseline checkpoint already exists:"
-  echo "      ${FINAL_CKPT}"
+  echo "[1/1] Skipping training because all expected baseline checkpoints already exist:"
+  expected_checkpoint_files | sort -u | sed 's/^/      /'
 fi
 
-if [[ ! -f "${FINAL_CKPT}" ]]; then
-  echo "Expected final baseline checkpoint not found: ${FINAL_CKPT}" >&2
+mapfile -t MISSING_BASELINE_CKPTS < <(missing_expected_checkpoints)
+if [[ "${#MISSING_BASELINE_CKPTS[@]}" -gt 0 ]]; then
+  echo "Expected baseline checkpoint(s) not found:" >&2
+  printf '  %s\n' "${MISSING_BASELINE_CKPTS[@]}" >&2
   echo "Note: vanilla trainer does not support in-script resume from partial checkpoints." >&2
   exit 1
 fi

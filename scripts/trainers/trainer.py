@@ -344,7 +344,6 @@ class Trainer:
         if self.training_recipe == "vanilla":
             self.strategy = DefaultStrategy(
                 verbose=True,
-                scene_scale=self.scene_scale,
                 prune_opa=cfg.strategy_prune_opa,
                 grow_grad2d=cfg.strategy_grow_grad2d,
                 grow_scale3d=cfg.strategy_grow_scale3d,
@@ -552,15 +551,18 @@ class Trainer:
         ]
         if len(scheduler) < mask_count:
             scheduler.extend([infer_steps] * (mask_count - len(scheduler)))
-        return scheduler[:mask_count]
+        scheduler = scheduler[:mask_count]
+        if scheduler:
+            scheduler[-1] = infer_steps
+        return scheduler
 
-    def _build_freefix_guide_until(self) -> int:
+    def _build_freefix_guide_until(self) -> float:
         infer_steps = self._build_freefix_infer_steps()
-        return max(0, min(infer_steps, int(infer_steps * self.cfg.freefix_guide_ratio)))
+        return max(0.0, min(float(infer_steps), infer_steps * float(self.cfg.freefix_guide_ratio)))
 
-    def _build_freefix_warp_until(self) -> int:
+    def _build_freefix_warp_until(self) -> float:
         infer_steps = self._build_freefix_infer_steps()
-        return max(0, min(infer_steps, int(infer_steps * self.cfg.freefix_warp_ratio)))
+        return max(0.0, min(float(infer_steps), infer_steps * float(self.cfg.freefix_warp_ratio)))
 
     @staticmethod
     def _matches_schedule(step: int, schedule: set[int]) -> bool:
@@ -834,9 +836,10 @@ class Trainer:
                 sh_degree=self.cfg.sh_degree,
                 render_mode="RGB+ED",
             )
-            colors = torch.clamp(rgbs[..., :3], 0.0, 1.0)
+            rgb_channels = rgbs[..., :3]
+            colors = torch.clamp(rgb_channels.detach(), 0.0, 1.0)
             alpha = alphas[..., 0]
-            colors.backward(gradient=torch.ones_like(colors))
+            rgb_channels.backward(gradient=torch.ones_like(rgb_channels))
 
             hessian_terms: List[Tensor] = []
             for attr in self.freefix_hessian_attrs:
@@ -1308,7 +1311,7 @@ class Trainer:
 
         infer_steps = self._build_freefix_infer_steps()
         mask_scheduler = self._build_freefix_mask_scheduler(mask_count=len(self.freefix_certainty_scales))
-        guide_until = infer_steps * cfg.freefix_guide_ratio
+        guide_until = self._build_freefix_guide_until()
         freefix_generator = torch.manual_seed(64)
 
         train_cams: List[Dict[str, Any]] = [self.trainset[j] for j in range(len(self.trainset))]
@@ -1359,7 +1362,7 @@ class Trainer:
                 warp_mask = None
                 refine_steps = cfg.freefix_refine_steps * 2
             else:
-                warp_until = infer_steps * cfg.freefix_warp_ratio
+                warp_until = self._build_freefix_warp_until()
                 warp_mask = alpha.detach()
                 refine_steps = cfg.freefix_refine_steps
 
@@ -1513,6 +1516,17 @@ class Trainer:
                 loss = loss * self._get_real_loss_scale()
             loss.backward()
 
+            post_before_optimizer = self.training_recipe in {"vanilla", "freefix"}
+            if post_before_optimizer:
+                self.strategy.step_post_backward(
+                    params=self.splats,
+                    optimizers=self.optimizers,
+                    state=self.strategy_state,
+                    step=step,
+                    info=info,
+                    packed=cfg.packed,
+                )
+
             should_save = (
                 bool(self.save_steps)
                 and (self._matches_schedule(step, self.save_steps) or step == cfg.max_steps - 1)
@@ -1532,17 +1546,6 @@ class Trainer:
                 stats_path = self.stats_dir / f"train_step{step:04d}_rank0.json"
                 with open(stats_path, "w", encoding="utf-8") as f:
                     json.dump(stats, f, indent=2)
-
-            post_before_optimizer = self.training_recipe in {"vanilla", "freefix"}
-            if post_before_optimizer:
-                self.strategy.step_post_backward(
-                    params=self.splats,
-                    optimizers=self.optimizers,
-                    state=self.strategy_state,
-                    step=step,
-                    info=info,
-                    packed=cfg.packed,
-                )
 
             if cfg.sparse_grad:
                 gaussian_ids = info["gaussian_ids"]

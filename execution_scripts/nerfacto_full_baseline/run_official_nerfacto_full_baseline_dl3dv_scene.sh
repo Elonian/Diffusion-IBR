@@ -39,7 +39,7 @@ NUM_DEVICES="${NUM_DEVICES:-1}"
 BASELINE_TOTAL_STEPS="${BASELINE_TOTAL_STEPS:-60000}"
 BASELINE_STEPS_PER_SAVE="${BASELINE_STEPS_PER_SAVE:-2000}"
 BASELINE_STEPS_PER_EVAL_BATCH="${BASELINE_STEPS_PER_EVAL_BATCH:-500}"
-NS_VIS="${NS_VIS:-viewer}"
+NS_VIS="${NS_VIS:-tensorboard}"
 
 DATA_FACTOR="${DATA_FACTOR:-4}"
 EVAL_MODE="${EVAL_MODE:-interval}" # fraction|filename|interval|all
@@ -58,6 +58,7 @@ SAVE_ALL_CHECKPOINTS="${SAVE_ALL_CHECKPOINTS:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 SETUP_LOCK_FILE="${SETUP_LOCK_FILE:-${REPO_ROOT}/cache_weights/locks/nerfacto_full_baseline_setup.lock}"
 SETUP_LOCK_WAIT_SECONDS="${SETUP_LOCK_WAIT_SECONDS:-1800}"
+SETUP_LOCK_HELD=0
 
 setup_logging() {
   local timestamp host_name script_name
@@ -312,6 +313,15 @@ maybe_enable_tcnn() {
   fi
 }
 
+release_setup_lock() {
+  if [[ "${SETUP_LOCK_HELD}" == "1" ]]; then
+    flock -u 200 || true
+    exec 200>&- || true
+    SETUP_LOCK_HELD=0
+    echo "[setup] Released setup lock."
+  fi
+}
+
 setup_logging
 
 if [[ ! -f "${TRAINER_SCRIPT}" ]]; then
@@ -339,6 +349,7 @@ else
       echo "[setup] Timed out waiting for setup lock after ${SETUP_LOCK_WAIT_SECONDS}s: ${SETUP_LOCK_FILE}" >&2
       exit 1
     fi
+    SETUP_LOCK_HELD=1
     echo "[setup] Acquired setup lock: ${SETUP_LOCK_FILE}"
   fi
   create_or_reuse_venv
@@ -359,6 +370,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   fi
 
   maybe_enable_tcnn "${VENV_PYTHON}"
+  release_setup_lock
 fi
 
 CMD=(

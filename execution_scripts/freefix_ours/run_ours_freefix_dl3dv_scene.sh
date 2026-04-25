@@ -84,6 +84,54 @@ setup_logging() {
   echo "[log] Writing stdout/stderr to ${LOG_FILE}"
 }
 
+check_python_deps() {
+  if [[ "${DRY_RUN}" == "1" || "${SKIP_PYTHON_DEPS_CHECK:-0}" == "1" ]]; then
+    return
+  fi
+
+  local missing
+  missing="$("${PYTHON_BIN}" - <<'PY'
+import importlib.util
+
+modules = [
+    "torch",
+    "numpy",
+    "PIL",
+    "imageio",
+    "scipy",
+    "cv2",
+    "sklearn",
+    "pycolmap",
+    "gsplat",
+    "torchvision",
+    "diffusers",
+    "transformers",
+    "accelerate",
+    "safetensors",
+    "huggingface_hub",
+    "torchmetrics",
+    "einops",
+    "roma",
+]
+
+for module in modules:
+    if importlib.util.find_spec(module) is None:
+        print(module)
+PY
+)"
+
+  if [[ -n "${missing}" ]]; then
+    echo "Python environment is missing packages required by the in-repo FreeFix runner:" >&2
+    while IFS= read -r module_name; do
+      [[ -n "${module_name}" ]] && echo "  - ${module_name}" >&2
+    done <<< "${missing}"
+    echo "Python used by this script: ${PYTHON_BIN}" >&2
+    echo "Install the repo requirements for that interpreter or set PYTHON_BIN to a prepared environment." >&2
+    echo "Suggested install command: ${PYTHON_BIN} -m pip install -r ${REPO_ROOT}/requirements.txt" >&2
+    exit 1
+  fi
+}
+
 setup_logging
 
 if [[ ! -f "${RUNNER_PY}" ]]; then
@@ -114,6 +162,8 @@ if [[ "${INSTALL_DEPS}" == "1" || "${AUTO_INSTALL_MISSING_DEPS}" == "1" ]]; then
   echo "[warn] Dependency auto-install is no longer handled by this scene wrapper."
   echo "[warn] Prepare the Python environment first, then rerun this script."
 fi
+
+check_python_deps
 
 CMD=(
   "${PYTHON_BIN}" "${RUNNER_PY}"

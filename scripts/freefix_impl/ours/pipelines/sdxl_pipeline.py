@@ -1515,12 +1515,13 @@ class StableDiffusionXLImg2ImgPipeline(
             needs_upcasting = self.vae.dtype == torch.float16 and self.vae.config.force_upcast
 
             if needs_upcasting:
-                self.upcast_vae()
-                latents = latents.to(next(iter(self.vae.post_quant_conv.parameters())).dtype)
+                # The memory-saving partial upcast path can leave mixed fp16/fp32
+                # VAE blocks on newer torch/diffusers stacks, which crashes in
+                # group_norm during decode. Decode the VAE fully in fp32 instead.
+                self.vae.to(dtype=torch.float32)
+                latents = latents.to(dtype=torch.float32)
             elif latents.dtype != self.vae.dtype:
-                if torch.backends.mps.is_available():
-                    # some platforms (eg. apple mps) misbehave due to a pytorch bug: https://github.com/pytorch/pytorch/pull/99272
-                    self.vae = self.vae.to(latents.dtype)
+                latents = latents.to(self.vae.dtype)
 
             # unscale/denormalize the latents
             # denormalize with the mean and std if available and not None
