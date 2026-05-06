@@ -209,7 +209,7 @@ with accumulated transmittance:
 ```math
 T_i(p)
 =
-\prod_{j<i}\left(1-\alpha_j(p)\right).
+\prod_{j=1}^{i-1}\left(1-\alpha_j(p)\right).
 ```
 
 Here, `alpha_i(p)` is the projected opacity contribution of Gaussian `i` at pixel `p`, and `T_i(p)` is the amount of light that reaches Gaussian `i` after previous Gaussians have already been composited. The full rendered image is:
