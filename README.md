@@ -192,7 +192,7 @@ G = \{(\mu_i, q_i, s_i, o_i, c_i)\}_{i=1}^{N},
 where `mu_i` is the center of Gaussian `i`, `q_i` is its rotation, `s_i` is its scale, `o_i` is its opacity, and `c_i` stores its color parameters. The rotation and scale define the covariance:
 
 ```math
-\Sigma_i = R(q_i)\operatorname{diag}(s_i^2)R(q_i)^\top.
+\Sigma_i = R(q_i)\mathrm{diag}(s_i^2)R(q_i)^\top.
 ```
 
 For a camera view `v`, the renderer projects visible Gaussians into the image plane and composites their color contributions along each pixel ray. For pixel `p`, the rendered color can be written as:
@@ -233,7 +233,7 @@ The vanilla baseline optimizes the Gaussian parameters only against these real v
 \left\|R(G,v_k)-I_k\right\|_1
 +
 \lambda_{ssim}
-\left(1-\operatorname{SSIM}(R(G,v_k),I_k)\right).
+\left(1-\mathrm{SSIM}(R(G,v_k),I_k)\right).
 ```
 
 The scene level optimization is therefore:
@@ -350,7 +350,7 @@ Although this repository does not train Difix, the report explains the objective
 \left\|\hat{I}-I^\star\right\|_2^2
 +
 \lambda_{lpips}
-\operatorname{LPIPS}(\hat{I},I^\star)
+\mathrm{LPIPS}(\hat{I},I^\star)
 +
 \lambda_{gram}
 \mathcal{L}_{gram}(\hat{I},I^\star).
@@ -425,7 +425,7 @@ where `M_t` is the set of confidence masks, `p_t` is the positive prompt, and `n
 ```math
 G^{(t+1)}
 =
-\operatorname{Update}
+\mathrm{Update}
 \left(
 G^{(t)},
 \mathcal{D}_{real},
